@@ -4,8 +4,6 @@ import { ensureRegistrySchema, getDb } from '@/db';
 import { subdomainRequests } from '@/db/schema';
 import { normalizeSubdomain, validateClaim } from '@/lib/registry';
 
-export const runtime = 'edge';
-
 export async function GET(request: NextRequest) {
   const subdomain = normalizeSubdomain(request.nextUrl.searchParams.get('subdomain') ?? '');
   if (!subdomain) return NextResponse.json({ error: 'Missing subdomain.' }, { status: 400 });

@@ -1,15 +1,12 @@
 import { desc, eq } from 'drizzle-orm';
-import { env } from 'cloudflare:workers';
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureRegistrySchema, getDb } from '@/db';
 import { subdomainRequests } from '@/db/schema';
 import { BASE_DOMAIN } from '@/lib/registry';
 
-export const runtime = 'edge';
-
 function authorized(request: NextRequest) {
   const key = request.headers.get('x-registry-admin-key');
-  return Boolean(env.REGISTRY_ADMIN_KEY && key && key === env.REGISTRY_ADMIN_KEY);
+  return Boolean(process.env.REGISTRY_ADMIN_KEY && key && key === process.env.REGISTRY_ADMIN_KEY);
 }
 
 export async function GET(request: NextRequest) {
@@ -36,11 +33,11 @@ export async function PATCH(request: NextRequest) {
     await db.update(subdomainRequests).set({ status: 'rejected', reviewerNote: note, reviewedAt: Date.now() }).where(eq(subdomainRequests.id, record.id));
     return NextResponse.json({ ok: true, status: 'rejected' });
   }
-  if (!env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ZONE_ID) return NextResponse.json({ error: 'DNS provisioning is not configured yet.' }, { status: 503 });
+  if (!process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ZONE_ID) return NextResponse.json({ error: 'DNS provisioning is not configured yet.' }, { status: 503 });
 
-  const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${env.CLOUDFLARE_ZONE_ID}/dns_records`, {
+  const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${process.env.CLOUDFLARE_ZONE_ID}/dns_records`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ type: 'CNAME', name: `${record.subdomain}.${BASE_DOMAIN}`, content: record.cnameTarget, ttl: 1, proxied: false, comment: `Takeshi Domains request ${record.id}` }),
   });
   const payload = await response.json() as { success?: boolean; errors?: Array<{ message?: string }>; result?: { id?: string } };

@@ -1,6 +1,6 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { bigint, index, pgTable, text } from 'drizzle-orm/pg-core';
 
-export const subdomainRequests = sqliteTable(
+export const subdomainRequests = pgTable(
   'subdomain_requests',
   {
     id: text('id').primaryKey(),
@@ -9,8 +9,8 @@ export const subdomainRequests = sqliteTable(
     githubHandle: text('github_handle'),
     email: text('email').notNull(),
     status: text('status', { enum: ['pending', 'active', 'rejected'] }).notNull().default('pending'),
-    createdAt: integer('created_at').notNull(),
-    reviewedAt: integer('reviewed_at'),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    reviewedAt: bigint('reviewed_at', { mode: 'number' }),
     reviewerNote: text('reviewer_note'),
     cloudflareRecordId: text('cloudflare_record_id'),
   },
