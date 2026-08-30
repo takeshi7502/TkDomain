@@ -9,6 +9,7 @@ import {
   subdomains,
   telegramLinkTokens,
   telegramLinks,
+  telegramRecoveryGrants,
   telegramVerificationChallenges,
   telegramWebhookUpdates,
 } from '@/db/schema';
@@ -19,9 +20,10 @@ const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const LINK_TOKEN_TTL_MS = 10 * 60 * 1_000;
 const DELETE_VERIFICATION_CODE_TTL_MS = 5 * 60 * 1_000;
 const RECOVERY_VERIFICATION_CODE_TTL_MS = 10 * 60 * 1_000;
+const RECOVERY_GRANT_TTL_MS = 10 * 60 * 1_000;
 const MAX_CODE_ATTEMPTS = 5;
 
-export const TELEGRAM_VERIFICATION_PURPOSES = ['subdomain_delete', 'access_key_recovery'] as const;
+export const TELEGRAM_VERIFICATION_PURPOSES = ['subdomain_delete', 'access_key_recovery', 'telegram_unlink'] as const;
 export type TelegramVerificationPurpose = (typeof TELEGRAM_VERIFICATION_PURPOSES)[number];
 
 export type TelegramIdentity = {
@@ -74,6 +76,15 @@ export type TelegramVerificationCheckResult =
   | { verified: true }
   | { verified: false; attemptsRemaining: number };
 
+export type TelegramRecoveryVerificationResult =
+  | { verified: true; grant: string; expiresAt: number }
+  | { verified: false; attemptsRemaining: number };
+
+export type TelegramUnlinkResult =
+  | { status: 'unlinked' }
+  | { status: 'not-linked' }
+  | { status: 'invalid-code'; attemptsRemaining: number };
+
 function botToken() {
   return process.env.TELEGRAM_BOT_TOKEN?.trim() || null;
 }
@@ -115,6 +126,37 @@ function compactText(value: unknown, maxLength: number) {
   return compact ? compact.slice(0, maxLength) : null;
 }
 
+function isTelegramUserId(value: string) {
+  return /^[1-9][0-9]{0,18}$/.test(value);
+}
+
+/**
+ * Recovery deliberately accepts only a verified username or Telegram's public
+ * numeric user id. It never falls back to the username written in a registry
+ * request, because that value was not proved through the bot.
+ */
+export function normalizeTelegramRecoveryIdentifier(value: unknown) {
+  const compact = compactText(value, 64);
+  if (!compact) return null;
+  if (isTelegramUserId(compact)) return compact;
+  const username = normalizeTelegramUsername(compact);
+  return isValidTelegramUsername(username) ? username : null;
+}
+
+export function isValidTelegramRecoveryIdentifier(value: unknown) {
+  return normalizeTelegramRecoveryIdentifier(value) !== null;
+}
+
+function recoveryGrantHash(ownerId: string, grant: string) {
+  return hashTelegramSecret('recovery-grant', `${ownerId}\u0000${grant}`);
+}
+
+/** Hashes a syntactically valid browser recovery capability for DB lookup. */
+export function hashTelegramRecoveryGrant(ownerId: string, grant: unknown) {
+  if (!ownerId || typeof grant !== 'string' || !/^recover_[A-Za-z0-9_-]{32,96}$/.test(grant)) return null;
+  return recoveryGrantHash(ownerId, grant);
+}
+
 function challengeFilter(ownerId: string, purpose: TelegramVerificationPurpose, subject: string | null) {
   return subject === null
     ? and(
@@ -134,9 +176,9 @@ function challengeCodeHash(ownerId: string, purpose: TelegramVerificationPurpose
 }
 
 function verificationCodeTtlMs(purpose: TelegramVerificationPurpose) {
-  return purpose === 'subdomain_delete'
-    ? DELETE_VERIFICATION_CODE_TTL_MS
-    : RECOVERY_VERIFICATION_CODE_TTL_MS;
+  return purpose === 'access_key_recovery'
+    ? RECOVERY_VERIFICATION_CODE_TTL_MS
+    : DELETE_VERIFICATION_CODE_TTL_MS;
 }
 
 function profileFromLink(link: typeof telegramLinks.$inferSelect): TelegramLinkProfile {
@@ -384,15 +426,20 @@ export async function getTelegramLinkForOwner(ownerId: string): Promise<Telegram
   return link ? profileFromLink(link) : null;
 }
 
-/** Internal lookup for access-key recovery; it never returns the private chat id. */
-export async function findTelegramLinkedOwner(linkedUsername: string) {
-  const normalized = normalizeTelegramUsername(linkedUsername);
-  if (!isValidTelegramUsername(normalized)) return null;
+/**
+ * Internal lookup for access-key recovery. It can match a verified Telegram
+ * username or public numeric user id, but never returns the private chat id.
+ */
+export async function findTelegramLinkedOwner(identifier: unknown) {
+  const normalized = normalizeTelegramRecoveryIdentifier(identifier);
+  if (!normalized) return null;
   await ensureRegistrySchema();
   const [link] = await getDb()
     .select({ ownerId: telegramLinks.ownerId, profile: telegramLinks })
     .from(telegramLinks)
-    .where(sql`lower(${telegramLinks.linkedUsername}) = ${normalized}`)
+    .where(isTelegramUserId(normalized)
+      ? eq(telegramLinks.telegramUserId, normalized)
+      : sql`lower(${telegramLinks.linkedUsername}) = ${normalized}`)
     .limit(1);
   return link ? { ownerId: link.ownerId, profile: profileFromLink(link.profile) } : null;
 }
@@ -430,6 +477,16 @@ export async function createTelegramVerificationChallenge(args: {
         challengeFilter(args.ownerId, args.purpose, subject),
         isNull(telegramVerificationChallenges.consumedAt),
       ));
+    // Requesting another recovery code also expires a previously verified
+    // recovery grant. A user should never have two concurrent reset paths.
+    if (args.purpose === 'access_key_recovery') {
+      await tx.update(telegramRecoveryGrants)
+        .set({ consumedAt: now })
+        .where(and(
+          eq(telegramRecoveryGrants.ownerId, args.ownerId),
+          isNull(telegramRecoveryGrants.consumedAt),
+        ));
+    }
     await tx.insert(telegramVerificationChallenges).values({
       id: crypto.randomUUID(),
       ownerId: args.ownerId,
@@ -448,7 +505,9 @@ export async function createTelegramVerificationChallenge(args: {
 function verificationMessage(purpose: TelegramVerificationPurpose, code: string) {
   const action = purpose === 'subdomain_delete'
     ? 'xóa subdomain chính'
-    : 'khôi phục access key';
+    : purpose === 'telegram_unlink'
+      ? 'hủy liên kết Telegram'
+      : 'khôi phục access key';
   const ttlMinutes = verificationCodeTtlMs(purpose) / 60_000;
   return [
     'TAKESHI DOMAINS',
@@ -532,6 +591,167 @@ export async function consumeTelegramVerificationCode(args: {
       .set({ attempts, ...(attemptsRemaining === 0 ? { consumedAt: now } : {}) })
       .where(eq(telegramVerificationChallenges.id, challenge.id));
     return { verified: false, attemptsRemaining };
+  });
+}
+
+/**
+ * Consume a recovery code and mint a second, very short-lived capability that
+ * is required to write a new access key. Keeping the capability in the DB
+ * makes the UI a genuine two-step flow and lets unlinking revoke it instantly.
+ */
+export async function verifyTelegramRecoveryCode(args: {
+  ownerId: string;
+  code: string;
+}): Promise<TelegramRecoveryVerificationResult> {
+  const code = args.code.trim();
+  if (!/^\d{6}$/.test(code)) return { verified: false, attemptsRemaining: MAX_CODE_ATTEMPTS };
+
+  await ensureRegistrySchema();
+  const now = Date.now();
+  const expiresAt = now + RECOVERY_GRANT_TTL_MS;
+  const grant = `recover_${randomBytes(32).toString('base64url')}`;
+
+  return getDb().transaction(async (tx): Promise<TelegramRecoveryVerificationResult> => {
+    const [link] = await tx
+      .select({ id: telegramLinks.id })
+      .from(telegramLinks)
+      .where(eq(telegramLinks.ownerId, args.ownerId))
+      .limit(1)
+      .for('update');
+    if (!link) return { verified: false, attemptsRemaining: 0 };
+
+    const [challenge] = await tx
+      .select()
+      .from(telegramVerificationChallenges)
+      .where(and(
+        challengeFilter(args.ownerId, 'access_key_recovery', null),
+        eq(telegramVerificationChallenges.telegramLinkId, link.id),
+        isNull(telegramVerificationChallenges.consumedAt),
+        gt(telegramVerificationChallenges.expiresAt, now),
+      ))
+      .orderBy(desc(telegramVerificationChallenges.createdAt))
+      .limit(1)
+      .for('update');
+    if (!challenge) return { verified: false, attemptsRemaining: 0 };
+
+    const expected = challengeCodeHash(args.ownerId, 'access_key_recovery', null, code);
+    if (!constantTimeEqual(challenge.codeHash, expected)) {
+      const attempts = challenge.attempts + 1;
+      const attemptsRemaining = Math.max(0, MAX_CODE_ATTEMPTS - attempts);
+      await tx.update(telegramVerificationChallenges)
+        .set({ attempts, ...(attemptsRemaining === 0 ? { consumedAt: now } : {}) })
+        .where(eq(telegramVerificationChallenges.id, challenge.id));
+      return { verified: false, attemptsRemaining };
+    }
+
+    await tx.update(telegramVerificationChallenges)
+      .set({ consumedAt: now })
+      .where(eq(telegramVerificationChallenges.id, challenge.id));
+    // A newer successful check supersedes any earlier reset capability.
+    await tx.update(telegramRecoveryGrants)
+      .set({ consumedAt: now })
+      .where(and(
+        eq(telegramRecoveryGrants.ownerId, args.ownerId),
+        isNull(telegramRecoveryGrants.consumedAt),
+      ));
+    await tx.insert(telegramRecoveryGrants).values({
+      id: crypto.randomUUID(),
+      ownerId: args.ownerId,
+      telegramLinkId: link.id,
+      tokenHash: recoveryGrantHash(args.ownerId, grant),
+      expiresAt,
+      createdAt: now,
+    });
+    return { verified: true, grant, expiresAt };
+  });
+}
+
+/**
+ * Confirm an unlink code and revoke every Telegram-derived capability in the
+ * same transaction. The audit event intentionally does not retain the chat id
+ * or public Telegram id after the link is gone.
+ */
+export async function unlinkTelegramForOwner(args: {
+  ownerId: string;
+  code: string;
+}): Promise<TelegramUnlinkResult> {
+  const code = args.code.trim();
+  if (!/^\d{6}$/.test(code)) return { status: 'invalid-code', attemptsRemaining: MAX_CODE_ATTEMPTS };
+
+  await ensureRegistrySchema();
+  const now = Date.now();
+  return getDb().transaction(async (tx): Promise<TelegramUnlinkResult> => {
+    const [owner] = await tx
+      .select({ id: owners.id })
+      .from(owners)
+      .where(and(eq(owners.id, args.ownerId), eq(owners.status, 'active')))
+      .limit(1)
+      .for('update');
+    if (!owner) return { status: 'not-linked' };
+
+    const [link] = await tx
+      .select()
+      .from(telegramLinks)
+      .where(eq(telegramLinks.ownerId, owner.id))
+      .limit(1)
+      .for('update');
+    if (!link) return { status: 'not-linked' };
+
+    const [challenge] = await tx
+      .select()
+      .from(telegramVerificationChallenges)
+      .where(and(
+        challengeFilter(owner.id, 'telegram_unlink', null),
+        eq(telegramVerificationChallenges.telegramLinkId, link.id),
+        isNull(telegramVerificationChallenges.consumedAt),
+        gt(telegramVerificationChallenges.expiresAt, now),
+      ))
+      .orderBy(desc(telegramVerificationChallenges.createdAt))
+      .limit(1)
+      .for('update');
+    if (!challenge) return { status: 'invalid-code', attemptsRemaining: 0 };
+
+    const expected = challengeCodeHash(owner.id, 'telegram_unlink', null, code);
+    if (!constantTimeEqual(challenge.codeHash, expected)) {
+      const attempts = challenge.attempts + 1;
+      const attemptsRemaining = Math.max(0, MAX_CODE_ATTEMPTS - attempts);
+      await tx.update(telegramVerificationChallenges)
+        .set({ attempts, ...(attemptsRemaining === 0 ? { consumedAt: now } : {}) })
+        .where(eq(telegramVerificationChallenges.id, challenge.id));
+      return { status: 'invalid-code', attemptsRemaining };
+    }
+
+    const [domain] = await tx
+      .select({ id: subdomains.id, label: subdomains.label })
+      .from(subdomains)
+      .where(and(eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active')))
+      .limit(1);
+
+    // Explicitly delete all capabilities rather than relying solely on FK
+    // cascades: link tokens are owner-scoped and would otherwise survive.
+    await tx.delete(telegramVerificationChallenges)
+      .where(eq(telegramVerificationChallenges.ownerId, owner.id));
+    await tx.delete(telegramRecoveryGrants)
+      .where(eq(telegramRecoveryGrants.ownerId, owner.id));
+    await tx.delete(telegramLinkTokens)
+      .where(eq(telegramLinkTokens.ownerId, owner.id));
+    await tx.delete(telegramLinks)
+      .where(eq(telegramLinks.id, link.id));
+    await tx.insert(dnsEvents).values({
+      id: crypto.randomUUID(),
+      subdomainId: domain?.id ?? null,
+      domainLabel: domain?.label ?? null,
+      actorType: 'owner',
+      action: 'telegram_unlinked',
+      details: {
+        verifiedUsername: link.linkedUsername !== null,
+        invalidatedLinkTokens: true,
+        invalidatedChallenges: true,
+      },
+      createdAt: now,
+    });
+
+    return { status: 'unlinked' };
   });
 }
 

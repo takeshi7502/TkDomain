@@ -145,6 +145,17 @@ async function createRegistrySchema() {
   )`);
   await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_verification_owner_purpose ON telegram_verification_challenges (owner_id, purpose, expires_at)');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_verification_link_expiry ON telegram_verification_challenges (telegram_link_id, expires_at)');
+  await sql.query(`CREATE TABLE IF NOT EXISTS telegram_recovery_grants (
+    id TEXT PRIMARY KEY NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+    telegram_link_id TEXT NOT NULL REFERENCES telegram_links(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at BIGINT NOT NULL,
+    consumed_at BIGINT,
+    created_at BIGINT NOT NULL
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_recovery_grants_owner_expiry ON telegram_recovery_grants (owner_id, expires_at)');
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_recovery_grants_link_expiry ON telegram_recovery_grants (telegram_link_id, expires_at)');
   await sql.query(`CREATE TABLE IF NOT EXISTS telegram_webhook_updates (
     update_id TEXT PRIMARY KEY NOT NULL,
     processed_at BIGINT NOT NULL

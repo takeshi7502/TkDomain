@@ -15,7 +15,12 @@ type OwnerSession = {
     // Kept only as the registration contact. The `telegram` value below is
     // the verified bot connection and is the only security/delivery channel.
     telegramUsername: string | null;
-    telegram: { username: string | null; displayName: string | null; linkedAt: number } | null;
+    telegram: {
+      telegramUserId: string;
+      username: string | null;
+      displayName: string | null;
+      linkedAt: number;
+    } | null;
   };
   subdomains: Array<{ id: string; label: string; status: string }>;
 };
@@ -35,6 +40,7 @@ type RequestSession = {
 type SessionData = OwnerSession | RequestSession;
 type EditableRecord = { recordType: RecordType; recordName: string; content: string; ttl: number; proxied: boolean; priority: string };
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
+type RecoveryStage = 'lookup' | 'send-code' | 'verify-code' | 'reset-key';
 
 const proxyable = new Set<RecordType>(['A', 'AAAA', 'CNAME']);
 const blankRecord = (): EditableRecord => ({ recordType: 'A', recordName: '@', content: '', ttl: 1, proxied: false, priority: '' });
@@ -53,6 +59,16 @@ function formatDate(timestamp: number) {
 
 function normalizeAccessKeySuffix(value: string) {
   return value.replace(/^tk-/i, '').replace(/[^a-z0-9._-]/gi, '').slice(0, 29);
+}
+
+function normalizeRecoveryIdentifier(value: string) {
+  const trimmed = value.trim();
+  if (/^\d/.test(trimmed)) return trimmed.replace(/\D/g, '').slice(0, 20);
+  return trimmed.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32).toLowerCase();
+}
+
+function isValidRecoveryIdentifier(value: string) {
+  return /^\d{1,20}$/.test(value) || isValidTelegramUsername(value);
 }
 
 export default function ManagePage() {
@@ -85,11 +101,17 @@ export default function ManagePage() {
   const [telegramLinkUrl, setTelegramLinkUrl] = useState<string | null>(null);
   const [telegramLinkExpiresAt, setTelegramLinkExpiresAt] = useState<number | null>(null);
   const [telegramNotice, setTelegramNotice] = useState<Notice>(null);
+  const [telegramUnlinkOpen, setTelegramUnlinkOpen] = useState(false);
+  const [telegramUnlinkCodeSent, setTelegramUnlinkCodeSent] = useState(false);
+  const [telegramUnlinkCode, setTelegramUnlinkCode] = useState('');
+  const [telegramUnlinkExpiresAt, setTelegramUnlinkExpiresAt] = useState<number | null>(null);
+  const [telegramUnlinkNotice, setTelegramUnlinkNotice] = useState<Notice>(null);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
-  const [recoveryUsername, setRecoveryUsername] = useState('');
-  const [recoveryUsernameTouched, setRecoveryUsernameTouched] = useState(false);
-  const [recoveryCodeSent, setRecoveryCodeSent] = useState(false);
+  const [recoveryIdentifier, setRecoveryIdentifier] = useState('');
+  const [recoveryIdentifierTouched, setRecoveryIdentifierTouched] = useState(false);
+  const [recoveryStage, setRecoveryStage] = useState<RecoveryStage>('lookup');
   const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryGrant, setRecoveryGrant] = useState('');
   const [recoveryKeySuffix, setRecoveryKeySuffix] = useState('');
   const [recoveryKeyTouched, setRecoveryKeyTouched] = useState(false);
   const [showRecoveryKey, setShowRecoveryKey] = useState(false);
@@ -106,7 +128,7 @@ export default function ManagePage() {
   const newAccessKey = `${OWNER_ACCESS_KEY_PREFIX}${newAccessKeySuffix}`;
   const currentAccessKeyInvalid = (currentAccessKeyTouched && currentAccessKeySuffix.length > 0 && !isValidOwnerAccessKey(currentAccessKey)) || currentAccessKeyRejected;
   const newAccessKeyInvalid = (newAccessKeyTouched && newAccessKeySuffix.length > 0 && !isValidOwnerAccessKey(newAccessKey)) || newAccessKeyRejected;
-  const recoveryUsernameInvalid = recoveryUsernameTouched && recoveryUsername.length > 0 && !isValidTelegramUsername(recoveryUsername);
+  const recoveryIdentifierInvalid = recoveryIdentifierTouched && recoveryIdentifier.length > 0 && !isValidRecoveryIdentifier(recoveryIdentifier);
   const recoveryAccessKey = `${OWNER_ACCESS_KEY_PREFIX}${recoveryKeySuffix}`;
   const recoveryKeyInvalid = recoveryKeyTouched && recoveryKeySuffix.length > 0 && !isValidOwnerAccessKey(recoveryAccessKey);
 
@@ -190,6 +212,18 @@ export default function ManagePage() {
   }, [telegramLinkExpiresAt, telegramLinkUrl]);
 
   useEffect(() => {
+    if (!telegramUnlinkCodeSent || !telegramUnlinkExpiresAt) return;
+    const remaining = telegramUnlinkExpiresAt - Date.now();
+    const timeout = window.setTimeout(() => {
+      setTelegramUnlinkCode('');
+      setTelegramUnlinkCodeSent(false);
+      setTelegramUnlinkExpiresAt(null);
+      setTelegramUnlinkNotice({ tone: 'info', text: 'Mã hủy liên kết đã hết hạn. Bạn có thể gửi mã mới.' });
+    }, Math.max(0, remaining));
+    return () => window.clearTimeout(timeout);
+  }, [telegramUnlinkExpiresAt, telegramUnlinkCodeSent]);
+
+  useEffect(() => {
     if (!deleteCodeSent || !deleteCodeExpiresAt) return;
     const remaining = deleteCodeExpiresAt - Date.now();
     const timeout = window.setTimeout(() => {
@@ -231,10 +265,11 @@ export default function ManagePage() {
   }
 
   function resetRecovery() {
-    setRecoveryUsername('');
-    setRecoveryUsernameTouched(false);
-    setRecoveryCodeSent(false);
+    setRecoveryIdentifier('');
+    setRecoveryIdentifierTouched(false);
+    setRecoveryStage('lookup');
     setRecoveryCode('');
+    setRecoveryGrant('');
     setRecoveryKeySuffix('');
     setRecoveryKeyTouched(false);
     setShowRecoveryKey(false);
@@ -248,11 +283,11 @@ export default function ManagePage() {
     });
   }
 
-  async function requestRecoveryCode(event: FormEvent) {
+  async function lookupRecoveryIdentifier(event: FormEvent) {
     event.preventDefault();
-    setRecoveryUsernameTouched(true);
-    if (!isValidTelegramUsername(recoveryUsername)) {
-      setRecoveryNotice({ tone: 'error', text: 'Nhập Telegram username đã liên kết, không cần dấu @.' });
+    setRecoveryIdentifierTouched(true);
+    if (!isValidRecoveryIdentifier(recoveryIdentifier)) {
+      setRecoveryNotice({ tone: 'error', text: 'Nhập Telegram username đã liên kết hoặc Telegram ID dạng số.' });
       return;
     }
     setState('saving');
@@ -261,17 +296,72 @@ export default function ManagePage() {
       const response = await fetch('/api/manage/recovery', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'request-code', telegramUsername: recoveryUsername }),
+        body: JSON.stringify({ action: 'lookup', identifier: recoveryIdentifier }),
       });
-      const payload = await response.json() as { error?: string; message?: string };
-      if (!response.ok) {
-        setRecoveryNotice({ tone: 'error', text: payload.error ?? 'Không thể yêu cầu mã khôi phục.' });
+      const payload = await response.json() as { error?: string; linked?: boolean; message?: string };
+      if (!response.ok || !payload.linked) {
+        setRecoveryNotice({ tone: 'error', text: payload.error ?? payload.message ?? 'Không tìm thấy Telegram đã liên kết với DNS Panel.' });
         return;
       }
-      setRecoveryCodeSent(true);
-      setRecoveryNotice({ tone: 'success', text: payload.message ?? 'Nếu Telegram đã liên kết, bot đã gửi mã khôi phục.' });
+      setRecoveryStage('send-code');
+      setRecoveryNotice({ tone: 'success', text: 'Đã tìm thấy Telegram đã xác minh. Gửi mã để tiếp tục.' });
     } catch {
-      setRecoveryNotice({ tone: 'error', text: 'Không thể kết nối để yêu cầu mã khôi phục.' });
+      setRecoveryNotice({ tone: 'error', text: 'Không thể kiểm tra Telegram đã liên kết.' });
+    } finally {
+      setState('idle');
+    }
+  }
+
+  async function sendRecoveryCode() {
+    if (!isValidRecoveryIdentifier(recoveryIdentifier)) return;
+    setState('saving');
+    setRecoveryNotice(null);
+    try {
+      const response = await fetch('/api/manage/recovery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send-code', identifier: recoveryIdentifier }),
+      });
+      const payload = await response.json() as { error?: string; expiresAt?: number };
+      if (!response.ok) {
+        setRecoveryNotice({ tone: 'error', text: payload.error ?? 'Không thể gửi mã khôi phục.' });
+        return;
+      }
+      setRecoveryStage('verify-code');
+      setRecoveryCode('');
+      setRecoveryNotice({ tone: 'success', text: `Mã đã được gửi qua Telegram${payload.expiresAt ? `, hết hạn ${formatDate(payload.expiresAt)}` : ''}.` });
+    } catch {
+      setRecoveryNotice({ tone: 'error', text: 'Không thể kết nối để gửi mã khôi phục.' });
+    } finally {
+      setState('idle');
+    }
+  }
+
+  async function verifyRecoveryCode(event: FormEvent) {
+    event.preventDefault();
+    if (!/^\d{6}$/.test(recoveryCode)) {
+      setRecoveryNotice({ tone: 'error', text: 'Nhập đủ mã xác minh gồm 6 số.' });
+      return;
+    }
+    setState('saving');
+    setRecoveryNotice(null);
+    try {
+      const response = await fetch('/api/manage/recovery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verify-code', identifier: recoveryIdentifier, code: recoveryCode }),
+      });
+      const payload = await response.json() as { error?: string; grant?: string };
+      if (!response.ok || !payload.grant) {
+        setRecoveryNotice({ tone: 'error', text: payload.error ?? 'Mã xác minh không đúng hoặc đã hết hạn.' });
+        return;
+      }
+      setRecoveryGrant(payload.grant);
+      setRecoveryCode('');
+      setRecoveryStage('reset-key');
+      setRecoveryNotice({ tone: 'success', text: 'Telegram đã xác minh. Bây giờ hãy đặt access key mới.' });
+    } catch {
+      setRecoveryNotice({ tone: 'error', text: 'Không thể xác minh mã khôi phục.' });
     } finally {
       setState('idle');
     }
@@ -279,10 +369,9 @@ export default function ManagePage() {
 
   async function recoverAccessKey(event: FormEvent) {
     event.preventDefault();
-    setRecoveryUsernameTouched(true);
     setRecoveryKeyTouched(true);
-    if (!isValidTelegramUsername(recoveryUsername) || !/^\d{6}$/.test(recoveryCode) || !isValidOwnerAccessKey(recoveryAccessKey)) {
-      setRecoveryNotice({ tone: 'error', text: 'Kiểm tra lại Telegram username, mã 6 số và access key mới.' });
+    if (!recoveryGrant || !isValidOwnerAccessKey(recoveryAccessKey)) {
+      setRecoveryNotice({ tone: 'error', text: 'Đặt access key mới hợp lệ trước khi tiếp tục.' });
       return;
     }
     setState('saving');
@@ -293,8 +382,8 @@ export default function ManagePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'reset-access-key',
-          telegramUsername: recoveryUsername,
-          code: recoveryCode,
+          identifier: recoveryIdentifier,
+          grant: recoveryGrant,
           newAccessKey: recoveryAccessKey,
         }),
       });
@@ -316,21 +405,91 @@ export default function ManagePage() {
 
   async function createTelegramLink() {
     if (!session || session.type !== 'owner' || session.owner.telegram) return;
+    // Open the tab synchronously while this still counts as a direct user gesture.
+    // If a browser blocks it, the compact fallback link below remains available.
+    const botWindow = window.open('about:blank', '_blank');
     setState('saving');
     setTelegramNotice(null);
     try {
       const response = await fetch('/api/manage/telegram-link', { method: 'POST' });
       const payload = await response.json() as { error?: string; url?: string; expiresAt?: number };
       if (!response.ok || !payload.url || !payload.expiresAt) {
+        botWindow?.close();
         setTelegramNotice({ tone: 'error', text: payload.error ?? 'Không thể tạo link Telegram.' });
         if (response.status === 409) await loadPanel();
         return;
       }
       setTelegramLinkUrl(payload.url);
       setTelegramLinkExpiresAt(payload.expiresAt);
-      setTelegramNotice({ tone: 'info', text: 'Mở bot bên dưới rồi bấm Start. Trang này tự nhận liên kết trong vài giây.' });
+      if (botWindow) {
+        botWindow.opener = null;
+        botWindow.location.replace(payload.url);
+      }
+      setTelegramNotice({ tone: 'info', text: botWindow ? 'Bot đã được mở. Bấm Start rồi quay lại trang này.' : 'Trình duyệt chặn tab mới. Hãy dùng link mở bot bên dưới.' });
     } catch {
+      botWindow?.close();
       setTelegramNotice({ tone: 'error', text: 'Không thể kết nối để tạo link Telegram.' });
+    } finally {
+      setState('idle');
+    }
+  }
+
+  function resetTelegramUnlink() {
+    setTelegramUnlinkOpen(false);
+    setTelegramUnlinkCodeSent(false);
+    setTelegramUnlinkCode('');
+    setTelegramUnlinkExpiresAt(null);
+    setTelegramUnlinkNotice(null);
+  }
+
+  async function sendTelegramUnlinkCode() {
+    if (!session || session.type !== 'owner' || !session.owner.telegram) return;
+    setState('saving');
+    setTelegramUnlinkNotice(null);
+    try {
+      const response = await fetch('/api/manage/telegram-link', {
+        method: 'PATCH',
+      });
+      const payload = await response.json() as { error?: string; expiresAt?: number };
+      if (!response.ok) {
+        setTelegramUnlinkNotice({ tone: 'error', text: payload.error ?? 'Không thể gửi mã xác nhận.' });
+        return;
+      }
+      setTelegramUnlinkCode('');
+      setTelegramUnlinkCodeSent(true);
+      setTelegramUnlinkExpiresAt(payload.expiresAt ?? null);
+      setTelegramUnlinkNotice({ tone: 'success', text: `Mã xác nhận đã gửi qua Telegram${payload.expiresAt ? `, hết hạn ${formatDate(payload.expiresAt)}` : ''}.` });
+    } catch {
+      setTelegramUnlinkNotice({ tone: 'error', text: 'Không thể kết nối để gửi mã xác nhận.' });
+    } finally {
+      setState('idle');
+    }
+  }
+
+  async function confirmTelegramUnlink(event: FormEvent) {
+    event.preventDefault();
+    if (!/^\d{6}$/.test(telegramUnlinkCode)) {
+      setTelegramUnlinkNotice({ tone: 'error', text: 'Nhập đủ mã xác nhận gồm 6 số.' });
+      return;
+    }
+    setState('saving');
+    setTelegramUnlinkNotice(null);
+    try {
+      const response = await fetch('/api/manage/telegram-link', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: telegramUnlinkCode }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) {
+        setTelegramUnlinkNotice({ tone: 'error', text: payload.error ?? 'Mã xác nhận không đúng hoặc đã hết hạn.' });
+        return;
+      }
+      resetTelegramUnlink();
+      await loadPanel();
+      setTelegramNotice({ tone: 'success', text: 'Đã hủy liên kết Telegram. Thông báo bot và xác minh Telegram đã tắt.' });
+    } catch {
+      setTelegramUnlinkNotice({ tone: 'error', text: 'Không thể hủy liên kết Telegram.' });
     } finally {
       setState('idle');
     }
@@ -637,6 +796,8 @@ export default function ManagePage() {
     setTelegramLinkUrl(null);
     setTelegramLinkExpiresAt(null);
     setTelegramNotice(null);
+    resetTelegramUnlink();
+    resetRecovery();
     setNotice(null);
   }
 
@@ -664,22 +825,29 @@ export default function ManagePage() {
               <button className="text-button" type="button" onClick={toggleRecovery} disabled={state === 'saving'}>Đóng</button>
             </div>
             <p className="access-key-change-copy">Chỉ dùng được khi bạn đã liên kết Telegram bot với DNS Panel. Bot gửi mã riêng vào đúng tài khoản đã liên kết.</p>
-            {!recoveryCodeSent ? <form noValidate onSubmit={requestRecoveryCode}>
-              <label htmlFor="recovery-telegram">Telegram username đã liên kết
-                <div className={`field-combo${recoveryUsernameInvalid ? ' invalid' : ''}`}>
-                  <b>@</b>
-                  <input id="recovery-telegram" value={recoveryUsername} onChange={(event) => { setRecoveryUsername(event.target.value.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32).toLowerCase()); setRecoveryUsernameTouched(false); setRecoveryNotice(null); }} onBlur={() => setRecoveryUsernameTouched(true)} placeholder="your_telegram" autoComplete="username" required />
-                </div>
+            {recoveryStage === 'lookup' && <form noValidate onSubmit={lookupRecoveryIdentifier}>
+              <label htmlFor="recovery-telegram">Telegram username hoặc ID đã liên kết
+                <input id="recovery-telegram" className={`field${recoveryIdentifierInvalid ? ' invalid' : recoveryIdentifierTouched && recoveryIdentifier ? ' valid' : ''}`} value={recoveryIdentifier} onChange={(event) => { setRecoveryIdentifier(normalizeRecoveryIdentifier(event.target.value)); setRecoveryIdentifierTouched(false); setRecoveryNotice(null); }} onBlur={() => setRecoveryIdentifierTouched(true)} placeholder="@your_telegram hoặc 123456789" autoComplete="username" required />
               </label>
-              {recoveryUsernameInvalid && <small className="field-bad">Telegram username chưa đúng.</small>}
+              {recoveryIdentifierInvalid && <small className="field-bad">Nhập username Telegram hoặc Telegram ID dạng số.</small>}
               {recoveryNotice && <p className={`form-message ${recoveryNotice.tone}`} role={recoveryNotice.tone === 'error' ? 'alert' : 'status'}>{recoveryNotice.text}</p>}
-              <div className="editor-actions"><button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang gửi...' : 'Gửi mã qua Telegram'}</button></div>
-            </form> : <form noValidate onSubmit={recoverAccessKey}>
+              <div className="editor-actions"><button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang kiểm tra...' : 'Kiểm tra Telegram'}</button></div>
+            </form>}
+            {recoveryStage === 'send-code' && <div className="recovery-step">
+              <p className="recovery-identifier">Telegram đã xác minh: <strong>{/^\d+$/.test(recoveryIdentifier) ? `ID ${recoveryIdentifier}` : `@${recoveryIdentifier}`}</strong></p>
+              {recoveryNotice && <p className={`form-message ${recoveryNotice.tone}`} role={recoveryNotice.tone === 'error' ? 'alert' : 'status'}>{recoveryNotice.text}</p>}
+              <div className="editor-actions recovery-actions"><button className="button" type="button" onClick={() => void sendRecoveryCode()} disabled={state !== 'idle'}>{state === 'saving' ? 'Đang gửi...' : 'Gửi mã qua Telegram'}</button><button className="button secondary-action" type="button" onClick={() => { setRecoveryStage('lookup'); setRecoveryNotice(null); }} disabled={state === 'saving'}>Nhập lại</button></div>
+            </div>}
+            {recoveryStage === 'verify-code' && <form noValidate onSubmit={verifyRecoveryCode}>
               <label htmlFor="recovery-code">Mã từ Telegram
                 <input id="recovery-code" className="field recovery-code" value={recoveryCode} onChange={(event) => { setRecoveryCode(event.target.value.replace(/\D/g, '').slice(0, 6)); setRecoveryNotice(null); }} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required />
               </label>
+              {recoveryNotice && <p className={`form-message ${recoveryNotice.tone}`} role={recoveryNotice.tone === 'error' ? 'alert' : 'status'}>{recoveryNotice.text}</p>}
+              <div className="editor-actions recovery-actions"><button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang xác minh...' : 'Xác minh mã'}</button><button className="button secondary-action" type="button" onClick={() => void sendRecoveryCode()} disabled={state !== 'idle'}>Gửi lại mã</button></div>
+            </form>}
+            {recoveryStage === 'reset-key' && <form noValidate onSubmit={recoverAccessKey}>
               <label htmlFor="recovery-access-key">Access key mới
-                <div className={`field-combo access-key-combo${recoveryKeyInvalid ? ' invalid' : ''}`}>
+                <div className={`field-combo access-key-combo${recoveryKeyInvalid ? ' invalid' : recoveryKeyTouched && recoveryKeySuffix ? ' valid' : ''}`}>
                   <b>{OWNER_ACCESS_KEY_PREFIX}</b>
                   <input id="recovery-access-key" type={showRecoveryKey ? 'text' : 'password'} placeholder="your-new-key" value={recoveryKeySuffix} onChange={(event) => { setRecoveryKeySuffix(normalizeAccessKeySuffix(event.target.value)); setRecoveryKeyTouched(false); setRecoveryNotice(null); }} onBlur={() => setRecoveryKeyTouched(true)} autoComplete="new-password" required />
                   <HoldToRevealButton label="access key mới" onRevealChange={setShowRecoveryKey} />
@@ -687,9 +855,9 @@ export default function ManagePage() {
               </label>
               {recoveryKeyInvalid && <small className="field-bad">Dùng 11–29 ký tự, có cả chữ và số; chỉ thêm . _ - khi cần.</small>}
               {recoveryNotice && <p className={`form-message ${recoveryNotice.tone}`} role={recoveryNotice.tone === 'error' ? 'alert' : 'status'}>{recoveryNotice.text}</p>}
-              <div className="editor-actions recovery-actions"><button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang khôi phục...' : 'Đặt access key mới'}</button><button className="button secondary-action" type="button" onClick={() => { setRecoveryCodeSent(false); setRecoveryCode(''); setRecoveryNotice(null); }} disabled={state === 'saving'}>Nhập Telegram khác</button></div>
+              <div className="editor-actions recovery-actions"><button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang khôi phục...' : 'Đặt access key mới'}</button><button className="button secondary-action" type="button" onClick={resetRecovery} disabled={state === 'saving'}>Bắt đầu lại</button></div>
             </form>}
-            <p className="lost-key-help">Chưa từng liên kết bot? <a href="https://t.me/jinndesu" target="_blank" rel="noreferrer">Liên hệ Admin</a>.</p>
+            <p className="lost-key-help">Bạn chưa từng liên kết bot? <a href="https://t.me/jinndesu" target="_blank" rel="noreferrer">Liên hệ Admin</a>.</p>
           </section>}
         </div>
       </main>
@@ -718,20 +886,16 @@ export default function ManagePage() {
   }
 
   return <main className="manage-page"><div className="manage-shell">
-    <header className="manage-header"><Link href="/" className="back-link">← Takeshi Domains</Link><div className="manage-header-actions"><button className="text-button" type="button" onClick={openAccessKeyChange} disabled={state === 'saving'}>Đổi access key</button><button className="text-button" type="button" onClick={logout}>Đăng xuất</button></div></header>
-    <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>{session.owner.telegram ? `Telegram đã xác minh: ${session.owner.telegram.username ? `@${session.owner.telegram.username}` : session.owner.telegram.displayName ?? 'đã liên kết'}` : session.owner.telegramUsername ? `Telegram khi đăng ký: @${session.owner.telegramUsername}` : 'Owner account'}<br />Chỉ các record thuộc subdomain của bạn mới hiển thị ở đây.</p></div>
-    <section className={`panel telegram-link-panel${session.owner.telegram ? ' linked' : ''}`}>
-      <div className="telegram-link-heading"><div><p className="eyebrow"><span className="pixel-dot" /> TELEGRAM SECURITY</p><h2>{session.owner.telegram ? 'Telegram đã liên kết' : 'Liên kết Telegram bot'}</h2></div>{session.owner.telegram && <span className="status active">VERIFIED</span>}</div>
-      {session.owner.telegram ? <>
-        <p><strong>{session.owner.telegram.displayName ?? 'Tài khoản Telegram'}</strong>{session.owner.telegram.username ? ` · @${session.owner.telegram.username}` : ''}</p>
-        <p className="telegram-link-copy">Bot sẽ báo khi bạn tạo, sửa hoặc xóa DNS record. Khi xóa subdomain chính, hệ thống sẽ gửi một mã xác minh riêng vào Telegram này.</p>
-        {!session.owner.telegram.username && <p className="telegram-link-copy">Tài khoản này chưa có Telegram username nên không dùng được khôi phục access key tự phục vụ. Bạn vẫn có thể xác minh xóa subdomain qua bot hoặc liên hệ Admin.</p>}
-      </> : <>
-        <p className="telegram-link-copy">Tùy chọn nhưng nên bật: nhận thông báo DNS và thêm xác minh Telegram khi xóa toàn bộ subdomain. Chỉ tài khoản bấm Start bot mới được coi là đã liên kết.</p>
-        {telegramLinkUrl ? <div className="telegram-link-action"><a className="button" href={telegramLinkUrl} target="_blank" rel="noreferrer">Mở Telegram bot</a><span>Link dùng một lần{telegramLinkExpiresAt ? ` · hết hạn ${formatDate(telegramLinkExpiresAt)}` : ''}</span></div> : <div className="telegram-link-action"><button className="button secondary-action" type="button" onClick={() => void createTelegramLink()} disabled={state !== 'idle'}>{state === 'saving' ? 'Đang tạo link...' : 'Liên kết Telegram bot'}</button><span>Sau đó bấm Start trong bot.</span></div>}
-      </>}
+    <header className="manage-header"><Link href="/" className="back-link">← Takeshi Domains</Link><div className="manage-header-actions">{session.owner.telegram ? <button className="text-button" type="button" onClick={() => { if (telegramUnlinkOpen) resetTelegramUnlink(); else { setTelegramUnlinkOpen(true); setTelegramUnlinkNotice(null); } }} disabled={state === 'saving'}>Hủy liên kết Telegram</button> : <button className="text-button" type="button" onClick={() => void createTelegramLink()} disabled={state === 'saving'}>{state === 'saving' ? 'Đang mở bot...' : 'Liên kết Telegram'}</button>}<button className="text-button" type="button" onClick={openAccessKeyChange} disabled={state === 'saving'}>Đổi access key</button><button className="text-button" type="button" onClick={logout}>Đăng xuất</button></div></header>
+    <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>{session.owner.telegram ? <><span className="verified-telegram"><strong>Telegram đã xác minh:</strong> {session.owner.telegram.displayName ?? 'Tài khoản Telegram'}{session.owner.telegram.username ? ` · @${session.owner.telegram.username}` : ''} · ID {session.owner.telegram.telegramUserId}</span>Bot sẽ báo các thay đổi DNS và gửi mã xác minh khi cần.</> : <>{session.owner.telegramUsername ? `Telegram khi đăng ký: @${session.owner.telegramUsername}` : 'Telegram chưa liên kết'}<br />Liên kết bot để nhận thông báo DNS và tăng bảo mật.</>}<br />Chỉ các record thuộc subdomain của bạn mới hiển thị ở đây.</p></div>
+    {((!session.owner.telegram && telegramLinkUrl) || telegramNotice) && <div className="telegram-link-fallback">
+      {telegramLinkUrl && <>Nếu Telegram chưa tự mở: <a href={telegramLinkUrl} target="_blank" rel="noreferrer">Mở bot</a>{telegramLinkExpiresAt ? ` · link hết hạn ${formatDate(telegramLinkExpiresAt)}` : ''}.</>}
       {telegramNotice && <p className={`form-message ${telegramNotice.tone}`} role={telegramNotice.tone === 'error' ? 'alert' : 'status'}>{telegramNotice.text}</p>}
-    </section>
+    </div>}
+    {telegramUnlinkOpen && session.owner.telegram && <section className="panel telegram-unlink-panel" aria-labelledby="telegram-unlink-heading">
+      <div className="access-key-change-heading"><div><p className="eyebrow"><span className="pixel-dot" /> TELEGRAM SECURITY</p><h2 id="telegram-unlink-heading">Hủy liên kết Telegram</h2></div><button className="text-button" type="button" onClick={resetTelegramUnlink} disabled={state === 'saving'}>Đóng</button></div>
+      {!telegramUnlinkCodeSent ? <><p className="access-key-change-copy">Bot sẽ gửi mã xác nhận tới Telegram đang liên kết trước khi hủy. Sau đó bạn sẽ không còn nhận thông báo DNS hay dùng Telegram để xác minh xóa subdomain.</p>{telegramUnlinkNotice && <p className={`form-message ${telegramUnlinkNotice.tone}`} role={telegramUnlinkNotice.tone === 'error' ? 'alert' : 'status'}>{telegramUnlinkNotice.text}</p>}<div className="editor-actions"><button className="button destructive" type="button" onClick={() => void sendTelegramUnlinkCode()} disabled={state !== 'idle'}>{state === 'saving' ? 'Đang gửi...' : 'Gửi mã xác nhận'}</button><button className="button cancel" type="button" onClick={resetTelegramUnlink} disabled={state === 'saving'}>Hủy</button></div></> : <form noValidate onSubmit={confirmTelegramUnlink}><label htmlFor="telegram-unlink-code">Mã từ Telegram<input id="telegram-unlink-code" className="field recovery-code" value={telegramUnlinkCode} onChange={(event) => { setTelegramUnlinkCode(event.target.value.replace(/\D/g, '').slice(0, 6)); setTelegramUnlinkNotice(null); }} inputMode="numeric" autoComplete="one-time-code" placeholder="123456" required /></label>{telegramUnlinkNotice && <p className={`form-message ${telegramUnlinkNotice.tone}`} role={telegramUnlinkNotice.tone === 'error' ? 'alert' : 'status'}>{telegramUnlinkNotice.text}</p>}<div className="editor-actions"><button className="button destructive" type="submit" disabled={state !== 'idle' || !/^\d{6}$/.test(telegramUnlinkCode)}>{state === 'saving' ? 'Đang hủy...' : 'Xác nhận hủy liên kết'}</button><button className="button secondary-action" type="button" onClick={() => void sendTelegramUnlinkCode()} disabled={state !== 'idle'}>Gửi lại mã</button><button className="button cancel" type="button" onClick={resetTelegramUnlink} disabled={state === 'saving'}>Hủy</button></div></form>}
+    </section>}
     {accessKeyChangeOpen && renderAccessKeyChangePanel()}
     {subdomains.length === 0 ? <><div className="panel empty-state">Chưa có subdomain active cho access key này.</div>{notice && <p className={`form-message ${notice.tone}`} role={notice.tone === 'error' ? 'alert' : 'status'}>{notice.text}</p>}</> : <>
       <div className="domain-tabs" role="tablist">{subdomains.map((domain) => <button type="button" key={domain.id} className={domain.id === selected?.id ? 'domain-tab active' : 'domain-tab'} onClick={() => { setSelectedId(domain.id); resetForm(); setDeletePanelOpen(false); setDeleteConfirmation(''); resetDeleteVerification(); }}>{domain.label}.takeshi.dev</button>)}</div>

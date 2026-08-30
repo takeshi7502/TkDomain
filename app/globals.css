@@ -201,7 +201,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 }
 
 /* Owner credential controls stay compact without moving sensitive actions out of view. */
-.manage-header-actions { display: flex; align-items: center; gap: 15px; }
+.manage-header-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 15px; }
 .text-button:disabled { cursor: not-allowed; opacity: .58; }
 .owner-key-combo { margin-top: 8px; }
 .visibility-toggle:focus-visible { outline: 1px solid var(--lime); outline-offset: -2px; }
@@ -219,7 +219,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .access-key-change-actions .button:last-child { flex: 0 0 auto; }
 
 @media (max-width: 700px) {
-  .manage-header-actions { gap: 12px; }
+  .manage-header { align-items: flex-start; gap: 15px; }
+  .manage-header-actions { gap: 10px 12px; }
   .access-key-change-panel { padding: 18px; }
   .access-key-change-heading { align-items: center; }
   .access-key-change-actions .button:last-child { flex: 1; }
@@ -234,19 +235,21 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .recovery-panel .lost-key-help a { color: var(--lime); font-weight: 700; }
 .recovery-code { max-width: 240px; letter-spacing: .18em; }
 .recovery-actions { margin-top: 3px; }
+.recovery-step { display: grid; gap: 14px; }
+.recovery-identifier { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.recovery-identifier strong { color: var(--lime); }
 
-.telegram-link-panel { margin: -6px 0 20px; padding: 18px 20px; border-color: #586b3d; background: linear-gradient(135deg, rgba(27, 35, 21, .98), rgba(20, 25, 18, .98)); }
-.telegram-link-panel.linked { border-color: #718b43; background: linear-gradient(135deg, rgba(34, 45, 23, .98), rgba(20, 27, 17, .98)); }
-.telegram-link-heading { display: flex; align-items: start; justify-content: space-between; gap: 14px; }
-.telegram-link-heading .eyebrow { margin-bottom: 6px; }
-.telegram-link-heading h2 { font-size: 22px; }
-.telegram-link-panel > p { margin: 10px 0 0; color: #d6dfc5; font-size: 10px; line-height: 1.55; }
-.telegram-link-panel > p strong { color: var(--lime); }
-.telegram-link-copy { max-width: 760px; color: var(--muted) !important; }
-.telegram-link-action { display: flex; flex-wrap: wrap; align-items: center; gap: 11px; margin-top: 14px; }
-.telegram-link-action .button { flex: 0 0 auto; }
-.telegram-link-action span { color: var(--muted); font-size: 9px; line-height: 1.5; }
-.telegram-link-panel .form-message { margin: 14px 0 0; }
+.verified-telegram { display: block; margin-bottom: 3px; color: #dce7cc; }
+.verified-telegram strong { color: var(--lime); }
+.telegram-link-fallback { margin: -17px 0 19px; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.telegram-link-fallback a { color: var(--lime); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.telegram-link-fallback .form-message { margin: 8px 0 0; }
+.telegram-unlink-panel { max-width: 760px; margin: -5px 0 20px; padding: 17px 19px; border-color: #7d5c4e; background: linear-gradient(135deg, rgba(40, 30, 24, .84), rgba(21, 25, 18, .98)); }
+.telegram-unlink-panel .access-key-change-heading { padding-bottom: 11px; }
+.telegram-unlink-panel .access-key-change-heading h2 { font-size: 21px; }
+.telegram-unlink-panel label { display: block; margin-bottom: 14px; color: #e1d3c7; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+.telegram-unlink-panel label .field { display: block; margin-top: 7px; }
+.telegram-unlink-panel .form-message { margin: 0 0 13px; }
 
 .delete-telegram-verification { display: grid; gap: 9px; margin-top: 15px; padding: 12px; border: 1px dashed #91745a; background: rgba(55, 37, 29, .38); }
 .delete-telegram-verification p { display: grid; gap: 3px; margin: 0; }
@@ -257,9 +260,6 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .delete-no-telegram { margin: 15px 0 0; padding: 10px; border: 1px dashed #78554c; color: #dfb1a8; font-size: 9px; line-height: 1.55; }
 
 @media (max-width: 700px) {
-  .recovery-panel, .telegram-link-panel { padding: 18px; }
-  .telegram-link-heading { align-items: center; }
-  .telegram-link-action { align-items: stretch; flex-direction: column; }
-  .telegram-link-action .button { width: 100%; }
+  .recovery-panel, .telegram-unlink-panel { padding: 18px; }
   .recovery-actions { flex-direction: column; }
 }

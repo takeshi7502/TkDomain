@@ -168,7 +168,7 @@ export const telegramVerificationChallenges = pgTable(
     id: text('id').primaryKey(),
     ownerId: text('owner_id').notNull().references(() => owners.id, { onDelete: 'cascade' }),
     telegramLinkId: text('telegram_link_id').notNull().references(() => telegramLinks.id, { onDelete: 'cascade' }),
-    purpose: text('purpose', { enum: ['subdomain_delete', 'access_key_recovery'] }).notNull(),
+    purpose: text('purpose', { enum: ['subdomain_delete', 'access_key_recovery', 'telegram_unlink'] }).notNull(),
     subject: text('subject'),
     codeHash: text('code_hash').notNull(),
     expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
@@ -179,6 +179,29 @@ export const telegramVerificationChallenges = pgTable(
   (table) => [
     index('idx_telegram_verification_owner_purpose').on(table.ownerId, table.purpose, table.expiresAt),
     index('idx_telegram_verification_link_expiry').on(table.telegramLinkId, table.expiresAt),
+  ],
+);
+
+/**
+ * A successful Telegram recovery-code check only grants a brief, one-time
+ * capability to choose a new access key. This keeps the reset form out of the
+ * UI until the code was verified, without exposing a reusable session or a
+ * Telegram chat identifier to the browser.
+ */
+export const telegramRecoveryGrants = pgTable(
+  'telegram_recovery_grants',
+  {
+    id: text('id').primaryKey(),
+    ownerId: text('owner_id').notNull().references(() => owners.id, { onDelete: 'cascade' }),
+    telegramLinkId: text('telegram_link_id').notNull().references(() => telegramLinks.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+    consumedAt: bigint('consumed_at', { mode: 'number' }),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [
+    index('idx_telegram_recovery_grants_owner_expiry').on(table.ownerId, table.expiresAt),
+    index('idx_telegram_recovery_grants_link_expiry').on(table.telegramLinkId, table.expiresAt),
   ],
 );
 

@@ -110,6 +110,7 @@ function dnsActionLabel(action: string) {
     owner_access_key_recovered: 'Khôi phục access key qua Telegram',
     telegram_linked: 'Liên kết Telegram bot',
     telegram_link_refreshed: 'Làm mới liên kết Telegram',
+    telegram_unlinked: 'Hủy liên kết Telegram',
     subdomain_created: 'Tạo subdomain',
     subdomain_deleted: 'Xóa subdomain',
     subdomain_released: 'Trả lại subdomain',

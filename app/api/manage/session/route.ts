@@ -29,6 +29,9 @@ async function ownerProfile(owner: typeof owners.$inferSelect) {
     telegramUsername: owner.telegramUsername,
     telegram: telegram
       ? {
+        // Telegram's public numeric account ID is safe for the owner to see
+        // and can be used in the recovery form. Never expose `chatId`.
+        telegramUserId: telegram.telegramUserId,
         username: telegram.linkedUsername,
         displayName: telegram.displayName,
         linkedAt: telegram.linkedAt,
