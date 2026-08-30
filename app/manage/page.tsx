@@ -3,6 +3,9 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 
+import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
+import { isValidOwnerAccessKey, OWNER_ACCESS_KEY_PREFIX } from '@/lib/registry';
+
 type RecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'MX' | 'CAA';
 type DnsRecord = { id: string; recordType: RecordType; recordName: string; content: string; ttl: number; proxied: boolean; priority: number | null; isPrimary: boolean };
 type ManagedSubdomain = { id: string; label: string; status: string; records: DnsRecord[] };
@@ -39,6 +42,10 @@ function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat('vi-VN', { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
 }
 
+function normalizeAccessKeySuffix(value: string) {
+  return value.replace(/^tk-/i, '').replace(/[^a-z0-9._-]/gi, '').slice(0, 29);
+}
+
 export default function ManagePage() {
   const [session, setSession] = useState<SessionData | null>(null);
   const [subdomains, setSubdomains] = useState<ManagedSubdomain[]>([]);
@@ -46,6 +53,16 @@ export default function ManagePage() {
   const [showAccessKey, setShowAccessKey] = useState(false);
   const [accessKeyTouched, setAccessKeyTouched] = useState(false);
   const [loginKeyRejected, setLoginKeyRejected] = useState(false);
+  const [accessKeyChangeOpen, setAccessKeyChangeOpen] = useState(false);
+  const [currentAccessKeySuffix, setCurrentAccessKeySuffix] = useState('');
+  const [newAccessKeySuffix, setNewAccessKeySuffix] = useState('');
+  const [currentAccessKeyTouched, setCurrentAccessKeyTouched] = useState(false);
+  const [newAccessKeyTouched, setNewAccessKeyTouched] = useState(false);
+  const [currentAccessKeyRejected, setCurrentAccessKeyRejected] = useState(false);
+  const [newAccessKeyRejected, setNewAccessKeyRejected] = useState(false);
+  const [showCurrentAccessKey, setShowCurrentAccessKey] = useState(false);
+  const [showNewAccessKey, setShowNewAccessKey] = useState(false);
+  const [accessKeyChangeNotice, setAccessKeyChangeNotice] = useState<Notice>(null);
   const [selectedId, setSelectedId] = useState('');
   const [record, setRecord] = useState<EditableRecord>(blankRecord());
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -60,7 +77,11 @@ export default function ManagePage() {
   const primaryRecord = useMemo(() => selected?.records.find((item) => item.isPrimary) ?? null, [selected]);
   const secondaryRecords = useMemo(() => selected?.records.filter((item) => !item.isPrimary) ?? [], [selected]);
   const confirmationTarget = selected ? `${selected.label}.takeshi.dev` : '';
-  const accessKeyInvalid = accessKeyTouched && (accessKey.trim().length === 0 || loginKeyRejected);
+  const accessKeyInvalid = accessKeyTouched && accessKey.trim().length > 0 && loginKeyRejected;
+  const currentAccessKey = `${OWNER_ACCESS_KEY_PREFIX}${currentAccessKeySuffix}`;
+  const newAccessKey = `${OWNER_ACCESS_KEY_PREFIX}${newAccessKeySuffix}`;
+  const currentAccessKeyInvalid = (currentAccessKeyTouched && currentAccessKeySuffix.length > 0 && !isValidOwnerAccessKey(currentAccessKey)) || currentAccessKeyRejected;
+  const newAccessKeyInvalid = (newAccessKeyTouched && newAccessKeySuffix.length > 0 && !isValidOwnerAccessKey(newAccessKey)) || newAccessKeyRejected;
 
   async function loadPanel(): Promise<SessionData | null> {
     try {
@@ -241,6 +262,118 @@ export default function ManagePage() {
     }
   }
 
+  function resetAccessKeyChange() {
+    setCurrentAccessKeySuffix('');
+    setNewAccessKeySuffix('');
+    setCurrentAccessKeyTouched(false);
+    setNewAccessKeyTouched(false);
+    setCurrentAccessKeyRejected(false);
+    setNewAccessKeyRejected(false);
+    setShowCurrentAccessKey(false);
+    setShowNewAccessKey(false);
+  }
+
+  function openAccessKeyChange() {
+    resetAccessKeyChange();
+    setAccessKeyChangeOpen(true);
+    setAccessKeyChangeNotice(null);
+    setNotice(null);
+  }
+
+  function closeAccessKeyChange() {
+    if (state === 'saving') return;
+    setAccessKeyChangeOpen(false);
+    resetAccessKeyChange();
+    setAccessKeyChangeNotice(null);
+  }
+
+  async function changeAccessKey(event: FormEvent) {
+    event.preventDefault();
+    setCurrentAccessKeyTouched(true);
+    setNewAccessKeyTouched(true);
+    setCurrentAccessKeyRejected(false);
+    setNewAccessKeyRejected(false);
+
+    if (!currentAccessKeySuffix || !newAccessKeySuffix) {
+      setAccessKeyChangeNotice({ tone: 'error', text: 'Nhập cả access key hiện tại và access key mới.' });
+      return;
+    }
+    if (!isValidOwnerAccessKey(currentAccessKey) || !isValidOwnerAccessKey(newAccessKey)) {
+      setAccessKeyChangeNotice({ tone: 'error', text: 'Phần sau tk- phải dài 11–29 ký tự, có cả chữ và số; chỉ dùng thêm . _ - khi cần.' });
+      return;
+    }
+    if (currentAccessKey === newAccessKey) {
+      setNewAccessKeyRejected(true);
+      setAccessKeyChangeNotice({ tone: 'error', text: 'Access key mới phải khác access key hiện tại.' });
+      return;
+    }
+
+    setState('saving');
+    setAccessKeyChangeNotice(null);
+    try {
+      const response = await fetch('/api/manage/access-key', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentAccessKey, newAccessKey }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) {
+        if (response.status === 401) setCurrentAccessKeyRejected(true);
+        if (response.status === 409) setNewAccessKeyRejected(true);
+        setState('idle');
+        setAccessKeyChangeNotice({ tone: 'error', text: payload.error ?? 'Không thể đổi access key.' });
+        return;
+      }
+
+      resetAccessKeyChange();
+      await loadPanel();
+      setAccessKeyChangeNotice({ tone: 'success', text: 'Đã đổi access key. Các phiên DNS Panel khác đã được đăng xuất.' });
+    } catch {
+      setState('idle');
+      setAccessKeyChangeNotice({ tone: 'error', text: 'Không thể kết nối để đổi access key. Hãy thử lại.' });
+    }
+  }
+
+  function renderAccessKeyChangePanel() {
+    return (
+      <section className="panel access-key-change-panel" aria-labelledby="access-key-change-heading">
+        <div className="access-key-change-heading">
+          <div>
+            <p className="eyebrow"><span className="pixel-dot" /> SECURITY</p>
+            <h2 id="access-key-change-heading">Đổi access key</h2>
+          </div>
+          <button className="text-button" type="button" onClick={closeAccessKeyChange} disabled={state === 'saving'}>Đóng</button>
+        </div>
+        <p className="access-key-change-copy">Phiên hiện tại vẫn được giữ. Tất cả phiên DNS Panel khác sẽ bị đăng xuất sau khi đổi key.</p>
+        <form noValidate onSubmit={changeAccessKey}>
+          <div className="form-pair">
+            <label htmlFor="current-access-key">Access key hiện tại
+              <div className={`field-combo access-key-combo${currentAccessKeyInvalid ? ' invalid' : ''}`}>
+                <b>{OWNER_ACCESS_KEY_PREFIX}</b>
+                <input id="current-access-key" type={showCurrentAccessKey ? 'text' : 'password'} placeholder="your-current-key" value={currentAccessKeySuffix} onChange={(event) => { setCurrentAccessKeySuffix(normalizeAccessKeySuffix(event.target.value)); setCurrentAccessKeyTouched(false); setCurrentAccessKeyRejected(false); setAccessKeyChangeNotice(null); }} onBlur={() => setCurrentAccessKeyTouched(true)} autoComplete="off" required />
+                <HoldToRevealButton label="access key hiện tại" onRevealChange={setShowCurrentAccessKey} />
+              </div>
+              {currentAccessKeyInvalid && <small className="field-bad">Access key hiện tại không đúng.</small>}
+            </label>
+            <label htmlFor="new-access-key">Access key mới
+              <div className={`field-combo access-key-combo${newAccessKeyInvalid ? ' invalid' : ''}`}>
+                <b>{OWNER_ACCESS_KEY_PREFIX}</b>
+                <input id="new-access-key" type={showNewAccessKey ? 'text' : 'password'} placeholder="your-new-key" value={newAccessKeySuffix} onChange={(event) => { setNewAccessKeySuffix(normalizeAccessKeySuffix(event.target.value)); setNewAccessKeyTouched(false); setNewAccessKeyRejected(false); setAccessKeyChangeNotice(null); }} onBlur={() => setNewAccessKeyTouched(true)} autoComplete="new-password" required />
+                <HoldToRevealButton label="access key mới" onRevealChange={setShowNewAccessKey} />
+              </div>
+              {newAccessKeyInvalid && <small className="field-bad">Dùng 11–29 ký tự, có cả chữ và số; chỉ thêm . _ - khi cần.</small>}
+            </label>
+          </div>
+          {accessKeyChangeNotice && <p className={`form-message ${accessKeyChangeNotice.tone}`} role={accessKeyChangeNotice.tone === 'error' ? 'alert' : 'status'}>{accessKeyChangeNotice.text}</p>}
+          <div className="editor-actions access-key-change-actions">
+            <button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang đổi...' : 'Đổi access key'}</button>
+            <button className="button cancel" type="button" onClick={closeAccessKeyChange} disabled={state === 'saving'}>Hủy</button>
+          </div>
+        </form>
+      </section>
+    );
+  }
+
   async function logout() {
     await fetch('/api/manage/session', { method: 'DELETE' });
     setSession(null);
@@ -249,6 +382,9 @@ export default function ManagePage() {
     resetForm();
     setDeletePanelOpen(false);
     setCancelRequestOpen(false);
+    setAccessKeyChangeOpen(false);
+    resetAccessKeyChange();
+    setAccessKeyChangeNotice(null);
     setNotice(null);
   }
 
@@ -260,9 +396,9 @@ export default function ManagePage() {
           <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>Nhập access key bạn đã tự đặt khi đăng ký. Key chỉ tạo phiên trên thiết bị này.</p></div>
           <form className="panel access-form" noValidate onSubmit={login}>
             <label htmlFor="owner-key">Owner access key
-              <div className="key-input">
-                <input id="owner-key" className={`field${accessKeyInvalid ? ' invalid' : ''}`} type={showAccessKey ? 'text' : 'password'} placeholder="tk-your-access-key" value={accessKey} onChange={(event) => { setAccessKey(event.target.value); setAccessKeyTouched(false); setLoginKeyRejected(false); setNotice(null); }} onBlur={() => setAccessKeyTouched(true)} autoComplete="off" required />
-                <button className="visibility-toggle" type="button" onClick={() => setShowAccessKey((visible) => !visible)} aria-label={showAccessKey ? 'Ẩn access key' : 'Hiện access key'} title={showAccessKey ? 'Ẩn access key' : 'Hiện access key'}>{showAccessKey ? '⊙' : '◉'}</button>
+              <div className={`field-combo access-key-combo owner-key-combo${accessKeyInvalid ? ' invalid' : ''}`}>
+                <input id="owner-key" type={showAccessKey ? 'text' : 'password'} placeholder="tk-your-access-key" value={accessKey} onChange={(event) => { setAccessKey(event.target.value); setAccessKeyTouched(false); setLoginKeyRejected(false); setNotice(null); }} onBlur={() => setAccessKeyTouched(true)} autoComplete="off" required />
+                <HoldToRevealButton label="access key" onRevealChange={setShowAccessKey} />
               </div>
             </label>
             {accessKeyInvalid && <small className="field-bad access-key-feedback">Nhập đầy đủ access key, gồm cả tiền tố tk-.</small>}
@@ -297,8 +433,9 @@ export default function ManagePage() {
   }
 
   return <main className="manage-page"><div className="manage-shell">
-    <header className="manage-header"><Link href="/" className="back-link">← Takeshi Domains</Link><button className="text-button" type="button" onClick={logout}>Đăng xuất</button></header>
+    <header className="manage-header"><Link href="/" className="back-link">← Takeshi Domains</Link><div className="manage-header-actions"><button className="text-button" type="button" onClick={openAccessKeyChange} disabled={state === 'saving'}>Đổi access key</button><button className="text-button" type="button" onClick={logout}>Đăng xuất</button></div></header>
     <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>{session.owner.telegramUsername ? `@${session.owner.telegramUsername}` : 'Owner account'}<br />Chỉ các record thuộc subdomain của bạn mới hiển thị ở đây.</p></div>
+    {accessKeyChangeOpen && renderAccessKeyChangePanel()}
     {subdomains.length === 0 ? <><div className="panel empty-state">Chưa có subdomain active cho access key này.</div>{notice && <p className={`form-message ${notice.tone}`} role={notice.tone === 'error' ? 'alert' : 'status'}>{notice.text}</p>}</> : <>
       <div className="domain-tabs" role="tablist">{subdomains.map((domain) => <button type="button" key={domain.id} className={domain.id === selected?.id ? 'domain-tab active' : 'domain-tab'} onClick={() => { setSelectedId(domain.id); resetForm(); setDeletePanelOpen(false); }}>{domain.label}.takeshi.dev</button>)}</div>
       {selected && <>

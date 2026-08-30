@@ -58,12 +58,14 @@ export async function GET(request: NextRequest) {
   if (requestRecord.status === 'active' && requestRecord.requestedAccessKeyHash) {
     const owner = await getDb().query.owners.findFirst({ where: eq(owners.accessKeyHash, requestRecord.requestedAccessKeyHash) });
     if (owner?.status === 'active') {
-      await removePendingRequestSession(request);
-      const token = await createOwnerSession(owner.id);
-      const response = NextResponse.json(await ownerPayload(owner));
-      clearPendingRequestSessionCookie(response);
-      setOwnerSessionCookie(response, token);
-      return response;
+      const token = await createOwnerSession(owner.id, requestRecord.requestedAccessKeyHash);
+      if (token) {
+        await removePendingRequestSession(request);
+        const response = NextResponse.json(await ownerPayload(owner));
+        clearPendingRequestSessionCookie(response);
+        setOwnerSessionCookie(response, token);
+        return response;
+      }
     }
   }
 
@@ -89,11 +91,13 @@ export async function POST(request: NextRequest) {
   const accessKeyHash = hashOwnerAccessKey(accessKey);
   const owner = await db.query.owners.findFirst({ where: eq(owners.accessKeyHash, accessKeyHash) });
   if (owner?.status === 'active') {
-    const token = await createOwnerSession(owner.id);
-    const response = NextResponse.json({ ok: true, ...(await ownerPayload(owner)) });
-    clearPendingRequestSessionCookie(response);
-    setOwnerSessionCookie(response, token);
-    return response;
+    const token = await createOwnerSession(owner.id, accessKeyHash);
+    if (token) {
+      const response = NextResponse.json({ ok: true, ...(await ownerPayload(owner)) });
+      clearPendingRequestSessionCookie(response);
+      setOwnerSessionCookie(response, token);
+      return response;
+    }
   }
 
   const [requestRecord] = await db

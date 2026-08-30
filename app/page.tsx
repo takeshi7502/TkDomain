@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from 'react';
 
+import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
 import { isValidCnameTarget, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername } from '@/lib/registry';
 
 type SubmissionState =
@@ -210,7 +211,7 @@ export default function Home() {
           <span className="brand-block" aria-hidden="true"><i /><i /><i /><i /></span>
           <span>TAKESHI <span className="brand-dim">DOMAINS</span></span>
         </a>
-        <nav aria-label="Main navigation"><a href="#how">Cách hoạt động</a><a href="#rules">Quy định</a><a href="/manage">Quản lý DNS</a></nav>
+        <nav className="site-nav" aria-label="Main navigation"><a href="#request">Đăng ký</a><a href="#how">Cách hoạt động</a><a href="#rules">Quy định</a><a className="dns-panel-link" href="/manage">DNS Panel</a></nav>
       </header>
 
       <section className="hero" id="top">
@@ -220,13 +221,13 @@ export default function Home() {
         <div className="hero-name-check">
           <div className="hero-check-row">
             <div className={inputClass('subdomain', 'field-combo')}><input id="hero-subdomain" aria-label="Kiểm tra subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" /><b>.takeshi.dev</b></div>
-            <a className="button secondary hero-check-button" href="#claim" onClick={(event) => { if (availability !== 'available') { event.preventDefault(); if (availability !== 'checking') void checkAvailability(); } }} aria-disabled={availability === 'checking'}>{heroButtonLabel}</a>
+            <a className="button secondary hero-check-button" href="#request" onClick={(event) => { if (availability !== 'available') { event.preventDefault(); if (availability !== 'checking') void checkAvailability(); } }} aria-disabled={availability === 'checking'}>{heroButtonLabel}</a>
           </div>
           <small aria-live="polite" className={heroStatusClass}>{availability === 'checking' ? 'Đang kiểm tra tên...' : availabilityMessage}</small>
         </div>
       </section>
 
-      <section className="content-grid" id="claim">
+      <section className="content-grid" id="request">
         <form className="panel request-form" noValidate onSubmit={submitClaim}>
           <div className="panel-heading"><span className="block-mark" aria-hidden="true" /><div><p>NEW REQUEST</p><h2>Đăng ký subdomain</h2></div></div>
           <label htmlFor="subdomain">Tên bạn muốn dùng
@@ -243,7 +244,7 @@ export default function Home() {
               {displayHint('telegramUsername', 'Nhập username, không cần dấu @.')}
             </label>
             <label htmlFor="access-key">Access key
-              <div className={inputClass('accessKey', 'field-combo access-key-combo')}><b>tk-</b><input id="access-key" type={showAccessKey ? 'text' : 'password'} placeholder="your-key-part" value={accessKeySuffix} onChange={(event) => { setAccessKeySuffix(event.target.value.replace(/[^a-z0-9._-]/gi, '').slice(0, 29)); resetFieldFeedback('accessKey'); }} onBlur={() => markTouched('accessKey')} autoComplete="new-password" required /><button className="visibility-toggle" type="button" onClick={() => setShowAccessKey((visible) => !visible)} aria-label={showAccessKey ? 'Ẩn access key' : 'Hiện access key'} title={showAccessKey ? 'Ẩn access key' : 'Hiện access key'}>{showAccessKey ? '⊙' : '◉'}</button></div>
+              <div className={inputClass('accessKey', 'field-combo access-key-combo')}><b>tk-</b><input id="access-key" type={showAccessKey ? 'text' : 'password'} placeholder="your-key-part" value={accessKeySuffix} onChange={(event) => { setAccessKeySuffix(event.target.value.replace(/[^a-z0-9._-]/gi, '').slice(0, 29)); resetFieldFeedback('accessKey'); }} onBlur={() => markTouched('accessKey')} autoComplete="new-password" required /><HoldToRevealButton label="access key" onRevealChange={setShowAccessKey} /></div>
               {displayHint('accessKey', 'Phần bạn đặt dài 11–29 ký tự, bắt buộc có cả chữ và số; chỉ dùng thêm . _ - khi cần.')}
             </label>
           </div>
@@ -257,11 +258,11 @@ export default function Home() {
 
         <aside className="side-stack">
           <section className="panel compact-panel" id="how"><p className="eyebrow"><span className="pixel-dot" /> HOW IT WORKS</p><h2>Ba bước là xong</h2><ol className="steps"><li><b>01</b><span>Thêm domain này vào trang cấu hình của host: <code>name.takeshi.dev</code>.</span></li><li><b>02</b><span>Gửi CNAME đích qua form bên cạnh.</span></li><li><b>03</b><span>Chờ duyệt. Khi được duyệt, DNS record sẽ được tạo.</span></li></ol></section>
-          <section className="panel compact-panel" id="rules"><p className="eyebrow"><span className="pixel-dot" /> RULES</p><h2>Giữ nó tử tế</h2><ul className="rules-list"><li>Chỉ hỗ trợ CNAME ở giai đoạn đầu.</li><li>Không phishing, spam, malware hoặc mạo danh.</li><li>Record vi phạm hoặc bỏ hoang có thể bị gỡ.</li></ul></section>
+          <section className="panel compact-panel" id="rules"><p className="eyebrow"><span className="pixel-dot" /> RULES</p><h2>Dùng cho đúng</h2><ul className="rules-list"><li>Mọi yêu cầu được duyệt thủ công; CNAME chính chỉ được tạo sau khi duyệt.</li><li>Sau khi active, dùng DNS Panel và access key để quản lý record dưới subdomain của bạn.</li><li>Giữ access key riêng tư. Phishing, spam, malware, mạo danh hoặc lạm dụng sẽ bị từ chối hoặc gỡ.</li></ul></section>
         </aside>
       </section>
 
-      <footer><span>TAKESHI DOMAINS</span><span>CNAME only · Review before publish</span><span>© 2026</span></footer>
+      <footer><span>TAKESHI DOMAINS</span><span>Duyệt thủ công · DNS Panel sau khi được duyệt</span><span>© 2026</span></footer>
     </main>
   );
 }

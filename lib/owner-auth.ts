@@ -25,18 +25,44 @@ export function hashOwnerAccessKey(value: string) {
   return hashSecret(value);
 }
 
-export async function createOwnerSession(ownerId: string) {
-  await ensureRegistrySchema();
+export function createOwnerSessionRecord(ownerId: string) {
   const rawToken = randomBytes(32).toString('base64url');
   const now = Date.now();
-  await getDb().insert(ownerSessions).values({
-    id: crypto.randomUUID(),
-    ownerId,
-    tokenHash: hashSecret(rawToken),
-    createdAt: now,
-    expiresAt: now + SESSION_MAX_AGE_SECONDS * 1_000,
+  return {
+    token: rawToken,
+    record: {
+      id: crypto.randomUUID(),
+      ownerId,
+      tokenHash: hashSecret(rawToken),
+      createdAt: now,
+      expiresAt: now + SESSION_MAX_AGE_SECONDS * 1_000,
+    },
+  };
+}
+
+/**
+ * Mint an owner session only while the supplied key is still the owner's
+ * current key.  Locking the owner row closes the race where a stale login can
+ * otherwise insert a session after an access-key rotation revoked all sessions.
+ */
+export async function createOwnerSession(ownerId: string, expectedAccessKeyHash: string) {
+  await ensureRegistrySchema();
+  const session = createOwnerSessionRecord(ownerId);
+  return getDb().transaction(async (tx) => {
+    const [owner] = await tx
+      .select({ id: owners.id })
+      .from(owners)
+      .where(and(
+        eq(owners.id, ownerId),
+        eq(owners.accessKeyHash, expectedAccessKeyHash),
+        eq(owners.status, 'active'),
+      ))
+      .for('update');
+    if (!owner) return null;
+
+    await tx.insert(ownerSessions).values(session.record);
+    return session.token;
   });
-  return rawToken;
 }
 
 export function setOwnerSessionCookie(response: NextResponse, token: string) {

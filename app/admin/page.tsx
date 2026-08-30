@@ -106,6 +106,7 @@ function dnsActionLabel(action: string) {
     child_record_updated: 'Sửa record con',
     child_record_deleted: 'Xóa record con',
     owner_key_reset: 'Tạo access key mới',
+    owner_access_key_changed: 'Chủ subdomain đổi access key',
     subdomain_created: 'Tạo subdomain',
     subdomain_deleted: 'Xóa subdomain',
     subdomain_released: 'Trả lại subdomain',
