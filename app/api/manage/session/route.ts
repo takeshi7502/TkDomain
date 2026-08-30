@@ -18,9 +18,23 @@ import {
 } from '@/lib/owner-auth';
 import { BASE_DOMAIN } from '@/lib/registry';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
+import { getTelegramLinkForOwner } from '@/lib/telegram';
 
-function ownerProfile(owner: typeof owners.$inferSelect) {
-  return { telegramUsername: owner.telegramUsername };
+async function ownerProfile(owner: typeof owners.$inferSelect) {
+  // `owners.telegramUsername` is supplied during registration and is not a
+  // verified Telegram identity. The dedicated link is the only value the UI
+  // may treat as a delivery/security channel.
+  const telegram = await getTelegramLinkForOwner(owner.id);
+  return {
+    telegramUsername: owner.telegramUsername,
+    telegram: telegram
+      ? {
+        username: telegram.linkedUsername,
+        displayName: telegram.displayName,
+        linkedAt: telegram.linkedAt,
+      }
+      : null,
+  };
 }
 
 async function ownerPayload(owner: typeof owners.$inferSelect) {
@@ -28,7 +42,7 @@ async function ownerPayload(owner: typeof owners.$inferSelect) {
     .select({ id: subdomains.id, label: subdomains.label, status: subdomains.status })
     .from(subdomains)
     .where(eq(subdomains.ownerId, owner.id));
-  return { type: 'owner' as const, owner: ownerProfile(owner), subdomains: domains };
+  return { type: 'owner' as const, owner: await ownerProfile(owner), subdomains: domains };
 }
 
 function requestPayload(requestRecord: typeof subdomainRequests.$inferSelect) {

@@ -26,11 +26,34 @@ Vercel Project Settings → Environment Variables:
 REGISTRY_ADMIN_KEY=<chuỗi ngẫu nhiên dài>
 CLOUDFLARE_API_TOKEN=<Cloudflare API token, chỉ Zone / DNS / Edit>
 CLOUDFLARE_ZONE_ID=<Zone ID của takeshi.dev>
+TELEGRAM_BOT_TOKEN=<token từ BotFather>
+TELEGRAM_ADMIN_CHAT_ID=<chat ID của admin, nếu dùng thông báo admin>
+TELEGRAM_BOT_USERNAME=<username bot, không có @; tùy chọn>
+TELEGRAM_WEBHOOK_SECRET=<random-secret-32-plus-chars>
+REGISTRY_PUBLIC_URL=https://domain.takeshi.dev
 ```
 
 `CLOUDFLARE_API_TOKEN` và `CLOUDFLARE_ZONE_ID` là tùy chọn: khi chưa có chúng,
 nút duyệt DNS sẽ trả về thông báo rằng DNS provisioning chưa được cấu hình.
 Không bao giờ commit secret vào Git.
+
+## Telegram bot (tùy chọn nhưng khuyến nghị)
+
+Bot được dùng cho hai loại thông báo độc lập:
+
+- Admin nhận báo có request mới (cần `TELEGRAM_ADMIN_CHAT_ID`).
+- Chủ subdomain có thể tự liên kết bot từ DNS Panel. Sau khi họ bấm Start,
+  bot sẽ báo các thay đổi DNS; đồng thời mã Telegram sẽ được yêu cầu khi xóa
+  subdomain chính hoặc khôi phục access key.
+
+Sau khi deploy biến môi trường Telegram lên **Production** của Vercel, đăng
+nhập `/admin` và bấm **Cài webhook bot** một lần. Nút này đăng ký an toàn
+`https://domain.takeshi.dev/api/telegram/webhook` với Telegram. Sau đó dùng
+**Test bot Telegram** để kiểm tra kênh thông báo admin.
+
+`TELEGRAM_BOT_USERNAME` giúp tạo link nhanh hơn; nếu bỏ trống app sẽ gọi
+Bot API `getMe` để lấy username bot. Không dùng BotFather `getUpdates` cùng
+lúc với webhook đang hoạt động.
 
 ## Admin API
 

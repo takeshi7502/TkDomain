@@ -1,11 +1,12 @@
 import { and, asc, eq } from 'drizzle-orm';
-import { NextRequest, NextResponse } from 'next/server';
+import { after, NextRequest, NextResponse } from 'next/server';
 
 import { getDb } from '@/db';
 import { dnsEvents, dnsRecords, subdomains } from '@/db/schema';
 import { createCloudflareRecord, deleteCloudflareRecord, updateCloudflareRecord } from '@/lib/cloudflare';
 import { fullRecordName, type DnsRecordInput, validateDnsRecord } from '@/lib/dns';
 import { getOwnerSession } from '@/lib/owner-auth';
+import { sendTelegramMessageToOwner } from '@/lib/telegram';
 
 async function currentOwner(request: NextRequest) {
   const session = await getOwnerSession(request);
@@ -25,6 +26,43 @@ function auditRecordSummary(record: { recordType: string; recordName: string; tt
     proxied: record.proxied,
     priority: record.priority,
   };
+}
+
+function recordActionLabel(action: 'created' | 'updated' | 'deleted') {
+  return action === 'created' ? 'đã tạo' : action === 'updated' ? 'đã cập nhật' : 'đã xóa';
+}
+
+/**
+ * Telegram is an optional convenience channel. Run it after the response so a
+ * transient Bot API/database failure can never make a successful Cloudflare
+ * change look failed to the DNS-panel owner.
+ */
+function notifyOwnerAboutDnsChange(args: {
+  ownerId: string;
+  action: 'created' | 'updated' | 'deleted';
+  domainLabel: string;
+  recordType: string;
+  recordName: string;
+}) {
+  const hostname = args.recordName === '@'
+    ? `${args.domainLabel}.takeshi.dev`
+    : `${args.recordName}.${args.domainLabel}.takeshi.dev`;
+  after(async () => {
+    try {
+      await sendTelegramMessageToOwner(args.ownerId, [
+        'TAKESHI DOMAINS',
+        '',
+        `DNS record ${recordActionLabel(args.action)}.`,
+        `${args.recordType} · ${hostname}`,
+        '',
+        'Mở DNS Panel để xem chi tiết.',
+      ].join('\n'));
+    } catch {
+      // Delivery is deliberately best-effort; do not log record contents,
+      // chat IDs, or an owner identifier here.
+      console.warn('Optional Telegram DNS notification could not be sent.');
+    }
+  });
 }
 
 export async function GET(request: NextRequest) {
@@ -73,6 +111,13 @@ export async function POST(request: NextRequest) {
     details: { ...auditRecordSummary(validated.value), isPrimary: false },
     createdAt: now,
   });
+  notifyOwnerAboutDnsChange({
+    ownerId: owner.id,
+    action: 'created',
+    domainLabel: domain.label,
+    recordType: validated.value.recordType,
+    recordName: validated.value.recordName,
+  });
   return NextResponse.json({ ok: true, record: { id, cloudflareRecordId, ...validated.value, createdAt: now, updatedAt: now } }, { status: 201 });
 }
 
@@ -114,6 +159,13 @@ export async function PATCH(request: NextRequest) {
     },
     createdAt: now,
   });
+  notifyOwnerAboutDnsChange({
+    ownerId: owner.id,
+    action: 'updated',
+    domainLabel: current.domain.label,
+    recordType: validated.value.recordType,
+    recordName: validated.value.recordName,
+  });
   return NextResponse.json({ ok: true });
 }
 
@@ -142,6 +194,13 @@ export async function DELETE(request: NextRequest) {
     action: 'child_record_deleted',
     details: { ...auditRecordSummary(current.record), isPrimary: false },
     createdAt: now,
+  });
+  notifyOwnerAboutDnsChange({
+    ownerId: owner.id,
+    action: 'deleted',
+    domainLabel: current.domain.label,
+    recordType: current.record.recordType,
+    recordName: current.record.recordName,
   });
   return NextResponse.json({ ok: true });
 }

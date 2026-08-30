@@ -114,6 +114,88 @@ export const pendingRequestSessions = pgTable(
   (table) => [index('idx_pending_request_sessions_request_expiry').on(table.requestId, table.expiresAt)],
 );
 
+/**
+ * A verified, private Telegram chat belongs to exactly one DNS-panel owner.
+ * Keep this separate from `owners.telegramUsername`: that legacy field is the
+ * username supplied on the original request, while this table is the verified
+ * delivery target for security codes and DNS notifications.
+ */
+export const telegramLinks = pgTable(
+  'telegram_links',
+  {
+    id: text('id').primaryKey(),
+    ownerId: text('owner_id').notNull().references(() => owners.id, { onDelete: 'cascade' }),
+    telegramUserId: text('telegram_user_id').notNull(),
+    chatId: text('chat_id').notNull(),
+    linkedUsername: text('linked_username'),
+    displayName: text('display_name'),
+    linkedAt: bigint('linked_at', { mode: 'number' }).notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [
+    uniqueIndex('telegram_links_owner_unique').on(table.ownerId),
+    uniqueIndex('telegram_links_user_unique').on(table.telegramUserId),
+    uniqueIndex('telegram_links_chat_unique').on(table.chatId),
+    index('idx_telegram_links_linked_username').on(table.linkedUsername),
+  ],
+);
+
+/**
+ * Short-lived deep-link parameters. Only an HMAC hash reaches the database so
+ * a database read alone can never be used to link somebody else's Telegram.
+ */
+export const telegramLinkTokens = pgTable(
+  'telegram_link_tokens',
+  {
+    id: text('id').primaryKey(),
+    ownerId: text('owner_id').notNull().references(() => owners.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+    consumedAt: bigint('consumed_at', { mode: 'number' }),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [index('idx_telegram_link_tokens_owner_expiry').on(table.ownerId, table.expiresAt)],
+);
+
+/**
+ * One-time security codes sent only to a linked chat. `subject` binds a code
+ * to one destructive action (for example a specific primary subdomain) rather
+ * than allowing a code issued for one action to authorize another.
+ */
+export const telegramVerificationChallenges = pgTable(
+  'telegram_verification_challenges',
+  {
+    id: text('id').primaryKey(),
+    ownerId: text('owner_id').notNull().references(() => owners.id, { onDelete: 'cascade' }),
+    telegramLinkId: text('telegram_link_id').notNull().references(() => telegramLinks.id, { onDelete: 'cascade' }),
+    purpose: text('purpose', { enum: ['subdomain_delete', 'access_key_recovery'] }).notNull(),
+    subject: text('subject'),
+    codeHash: text('code_hash').notNull(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+    consumedAt: bigint('consumed_at', { mode: 'number' }),
+    attempts: integer('attempts').notNull().default(0),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [
+    index('idx_telegram_verification_owner_purpose').on(table.ownerId, table.purpose, table.expiresAt),
+    index('idx_telegram_verification_link_expiry').on(table.telegramLinkId, table.expiresAt),
+  ],
+);
+
+/**
+ * Telegram can redeliver an update after a network timeout. Keep completed
+ * deep-link update IDs so a successful link is never followed by a confusing
+ * second "expired link" reply.
+ */
+export const telegramWebhookUpdates = pgTable(
+  'telegram_webhook_updates',
+  {
+    updateId: text('update_id').primaryKey(),
+    processedAt: bigint('processed_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [index('idx_telegram_webhook_updates_processed').on(table.processedAt)],
+);
+
 export const dnsEvents = pgTable(
   'dns_events',
   {

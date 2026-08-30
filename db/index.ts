@@ -110,6 +110,46 @@ async function createRegistrySchema() {
     created_at BIGINT NOT NULL
   )`);
   await sql.query('CREATE INDEX IF NOT EXISTS idx_pending_request_sessions_request_expiry ON pending_request_sessions (request_id, expires_at)');
+  await sql.query(`CREATE TABLE IF NOT EXISTS telegram_links (
+    id TEXT PRIMARY KEY NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+    telegram_user_id TEXT NOT NULL UNIQUE,
+    chat_id TEXT NOT NULL UNIQUE,
+    linked_username TEXT,
+    display_name TEXT,
+    linked_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE (owner_id)
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_links_linked_username ON telegram_links (linked_username)');
+  await sql.query(`CREATE TABLE IF NOT EXISTS telegram_link_tokens (
+    id TEXT PRIMARY KEY NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at BIGINT NOT NULL,
+    consumed_at BIGINT,
+    created_at BIGINT NOT NULL
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_link_tokens_owner_expiry ON telegram_link_tokens (owner_id, expires_at)');
+  await sql.query(`CREATE TABLE IF NOT EXISTS telegram_verification_challenges (
+    id TEXT PRIMARY KEY NOT NULL,
+    owner_id TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+    telegram_link_id TEXT NOT NULL REFERENCES telegram_links(id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL,
+    subject TEXT,
+    code_hash TEXT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    consumed_at BIGINT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_verification_owner_purpose ON telegram_verification_challenges (owner_id, purpose, expires_at)');
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_verification_link_expiry ON telegram_verification_challenges (telegram_link_id, expires_at)');
+  await sql.query(`CREATE TABLE IF NOT EXISTS telegram_webhook_updates (
+    update_id TEXT PRIMARY KEY NOT NULL,
+    processed_at BIGINT NOT NULL
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_telegram_webhook_updates_processed ON telegram_webhook_updates (processed_at)');
   await sql.query(`CREATE TABLE IF NOT EXISTS dns_events (
     id TEXT PRIMARY KEY NOT NULL,
     subdomain_id TEXT REFERENCES subdomains(id) ON DELETE SET NULL,

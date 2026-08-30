@@ -107,6 +107,9 @@ function dnsActionLabel(action: string) {
     child_record_deleted: 'Xóa record con',
     owner_key_reset: 'Tạo access key mới',
     owner_access_key_changed: 'Chủ subdomain đổi access key',
+    owner_access_key_recovered: 'Khôi phục access key qua Telegram',
+    telegram_linked: 'Liên kết Telegram bot',
+    telegram_link_refreshed: 'Làm mới liên kết Telegram',
     subdomain_created: 'Tạo subdomain',
     subdomain_deleted: 'Xóa subdomain',
     subdomain_released: 'Trả lại subdomain',
@@ -154,6 +157,7 @@ export default function AdminPage() {
   const [rejectingRequestId, setRejectingRequestId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [testingTelegram, setTestingTelegram] = useState(false);
+  const [configuringTelegramWebhook, setConfiguringTelegramWebhook] = useState(false);
   const polling = useRef(false);
   const actingOnRef = useRef<string | null>(null);
   const stateRef = useRef<AdminState>('idle');
@@ -303,6 +307,26 @@ export default function AdminPage() {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể gửi tin nhắn test Telegram.' });
     } finally {
       setTestingTelegram(false);
+    }
+  }
+
+  async function configureTelegramWebhook() {
+    if (configuringTelegramWebhook) return;
+    setConfiguringTelegramWebhook(true);
+    setNotice(null);
+    try {
+      const response = await fetch('/api/admin/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'configure-webhook' }),
+      });
+      const payload = await response.json() as { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error ?? 'Không thể cài webhook Telegram.');
+      setNotice({ tone: 'success', text: payload.message ?? 'Webhook bot đã được cài.' });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể cài webhook Telegram.' });
+    } finally {
+      setConfiguringTelegramWebhook(false);
     }
   }
 
@@ -529,7 +553,7 @@ export default function AdminPage() {
     <main className="admin-page">
       <div className="admin-shell">
         <Link href="/" className="back-link">← Về trang đăng ký</Link>
-        <div className="admin-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER AREA</p><h1>Requests</h1></div><div><p>{authenticated ? 'Phiên admin được giữ bằng cookie HTTP-only trên thiết bị này. Admin key không được lưu trong trình duyệt.' : 'Nhập admin key để tạo phiên an toàn trên thiết bị này. Key không được lưu trong trình duyệt.'}</p>{authenticated && <div className="admin-session-actions"><button type="button" className="text-button" onClick={() => void testTelegram()} disabled={testingTelegram}>{testingTelegram ? 'Đang gửi test...' : 'Test bot Telegram'}</button><button type="button" className="text-button" onClick={() => void logout()} disabled={state === 'loading'}>Đăng xuất admin</button></div>}</div></div>
+        <div className="admin-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER AREA</p><h1>Requests</h1></div><div><p>{authenticated ? 'Phiên admin được giữ bằng cookie HTTP-only trên thiết bị này. Admin key không được lưu trong trình duyệt.' : 'Nhập admin key để tạo phiên an toàn trên thiết bị này. Key không được lưu trong trình duyệt.'}</p>{authenticated && <div className="admin-session-actions"><button type="button" className="text-button" onClick={() => void configureTelegramWebhook()} disabled={configuringTelegramWebhook}>{configuringTelegramWebhook ? 'Đang cài webhook...' : 'Cài webhook bot'}</button><button type="button" className="text-button" onClick={() => void testTelegram()} disabled={testingTelegram}>{testingTelegram ? 'Đang gửi test...' : 'Test bot Telegram'}</button><button type="button" className="text-button" onClick={() => void logout()} disabled={state === 'loading'}>Đăng xuất admin</button></div>}</div></div>
         {!authenticated && sessionChecked && <form className="panel admin-key-form" onSubmit={startSession}>
           <label htmlFor="admin-key">Registry admin key<input id="admin-key" className="field" type="password" value={key} onChange={(event) => { setKey(event.target.value); setDashboardLoaded(false); }} autoComplete="off" required /></label>
           <button type="submit" className="button" disabled={state === 'loading'}>{state === 'loading' ? 'Đang mở...' : 'Mở dashboard'}</button>
