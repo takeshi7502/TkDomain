@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
@@ -10,6 +10,22 @@ import { createOwnerAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
 import { BASE_DOMAIN } from '@/lib/registry';
 
 const REVIEW_LEASE_MS = 10 * 60_000;
+
+// Deliberately omit Cloudflare's record ID here. The admin dashboard needs the
+// DNS configuration for inspection, but it never needs a provider credential
+// or provider-side identifier to render a subdomain's details.
+type AdminDnsRecord = {
+  id: string;
+  recordType: string;
+  recordName: string;
+  content: string;
+  ttl: number;
+  proxied: boolean;
+  priority: number | null;
+  isPrimary: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
 
 function authorized(request: NextRequest) {
   return isAdminAuthorized(request);
@@ -54,17 +70,42 @@ export async function GET(request: NextRequest) {
   ]);
 
   const domainIds = activeRows.map((domain) => domain.id);
-  const recordRows = domainIds.length === 0
+  const recordRows: Array<AdminDnsRecord & { subdomainId: string }> = domainIds.length === 0
     ? []
-    : await db.select({ subdomainId: dnsRecords.subdomainId, isPrimary: dnsRecords.isPrimary }).from(dnsRecords).where(inArray(dnsRecords.subdomainId, domainIds));
+    : await db
+      .select({
+        id: dnsRecords.id,
+        subdomainId: dnsRecords.subdomainId,
+        recordType: dnsRecords.recordType,
+        recordName: dnsRecords.recordName,
+        content: dnsRecords.content,
+        ttl: dnsRecords.ttl,
+        proxied: dnsRecords.proxied,
+        priority: dnsRecords.priority,
+        isPrimary: dnsRecords.isPrimary,
+        createdAt: dnsRecords.createdAt,
+        updatedAt: dnsRecords.updatedAt,
+      })
+      .from(dnsRecords)
+      .where(inArray(dnsRecords.subdomainId, domainIds))
+      .orderBy(desc(dnsRecords.isPrimary), asc(dnsRecords.recordName), asc(dnsRecords.recordType));
   const recordCounts = new Map<string, number>();
+  const recordsBySubdomain = new Map<string, AdminDnsRecord[]>();
   for (const record of recordRows) {
     if (!record.isPrimary) recordCounts.set(record.subdomainId, (recordCounts.get(record.subdomainId) ?? 0) + 1);
+    const { subdomainId, ...recordForDashboard } = record;
+    const records = recordsBySubdomain.get(subdomainId) ?? [];
+    records.push(recordForDashboard);
+    recordsBySubdomain.set(subdomainId, records);
   }
 
   return NextResponse.json({
     requests,
-    activeSubdomains: activeRows.map((domain) => ({ ...domain, recordCount: recordCounts.get(domain.id) ?? 0 })),
+    activeSubdomains: activeRows.map((domain) => ({
+      ...domain,
+      recordCount: recordCounts.get(domain.id) ?? 0,
+      records: recordsBySubdomain.get(domain.id) ?? [],
+    })),
     dnsEvents: eventRows,
   });
 }

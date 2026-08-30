@@ -19,6 +19,19 @@ type RequestRecord = {
   reviewerNote: string | null;
 };
 
+type AdminDnsRecord = {
+  id: string;
+  recordType: string;
+  recordName: string;
+  content: string;
+  ttl: number;
+  proxied: boolean;
+  priority: number | null;
+  isPrimary: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
 type ActiveSubdomain = {
   id: string;
   requestId: string | null;
@@ -28,6 +41,7 @@ type ActiveSubdomain = {
   updatedAt: number;
   telegramUsername: string | null;
   recordCount: number;
+  records: AdminDnsRecord[];
 };
 
 type DnsEvent = {
@@ -55,6 +69,14 @@ const tabs: Array<{ id: DashboardTab; label: string }> = [
 
 function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat('vi-VN', { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
+}
+
+function recordHost(label: string, recordName: string) {
+  return recordName === '@' ? `${label}.takeshi.dev` : `${recordName}.${label}.takeshi.dev`;
+}
+
+function ttlLabel(ttl: number) {
+  return ttl === 1 ? 'Auto' : `${ttl}s`;
 }
 
 function requestStatusLabel(status: RequestStatus) {
@@ -127,6 +149,7 @@ export default function AdminPage() {
   const [notice, setNotice] = useState<Notice>(null);
   const [accessKey, setAccessKey] = useState<{ subdomain: string; value: string } | null>(null);
   const [actingOn, setActingOn] = useState<string | null>(null);
+  const [expandedSubdomainId, setExpandedSubdomainId] = useState<string | null>(null);
   const polling = useRef(false);
   const actingOnRef = useRef<string | null>(null);
   const stateRef = useRef<AdminState>('idle');
@@ -160,7 +183,9 @@ export default function AdminPage() {
       }
       if (silent && !authenticatedRef.current) return;
       setRequests(payload.requests);
-      setActiveSubdomains(Array.isArray(payload.activeSubdomains) ? payload.activeSubdomains : []);
+      const nextSubdomains = Array.isArray(payload.activeSubdomains) ? payload.activeSubdomains : [];
+      setActiveSubdomains(nextSubdomains);
+      setExpandedSubdomainId((current) => nextSubdomains.some((domain) => domain.id === current) ? current : null);
       setDnsEvents(Array.isArray(payload.dnsEvents) ? payload.dnsEvents : []);
       setDashboardLoaded(true);
     } catch (error) {
@@ -249,6 +274,7 @@ export default function AdminPage() {
       setActiveSubdomains([]);
       setDnsEvents([]);
       setAccessKey(null);
+      setExpandedSubdomainId(null);
       setNotice(null);
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể đăng xuất phiên admin.' });
@@ -344,20 +370,50 @@ export default function AdminPage() {
     if (activeTab === 'active-subdomains') {
       return activeSubdomains.length === 0
         ? <div className="panel empty-state">Chưa có subdomain nào đang hoạt động.</div>
-        : <div className="request-list">{activeSubdomains.map((domain) => <article className="panel admin-list-row" key={domain.id}>
-          <div className="admin-row-main">
-            <h2 className="admin-row-title">{domain.label}<span>.takeshi.dev</span></h2>
-            <div className="admin-row-meta">
-              <span><b>Telegram</b>{domain.telegramUsername ? `@${domain.telegramUsername}` : 'Không có dữ liệu'}</span>
-              <span><b>Records con</b>{domain.recordCount}</span>
-              <span><b>Cập nhật</b>{formatDate(domain.updatedAt)}</span>
+        : <div className="request-list">{activeSubdomains.map((domain) => {
+          const expanded = expandedSubdomainId === domain.id;
+          const records = domain.records ?? [];
+          return <article className={`panel admin-list-row${expanded ? ' expanded' : ''}`} key={domain.id}>
+            <div className="admin-row-main">
+              <button
+                type="button"
+                className="admin-domain-toggle"
+                onClick={() => setExpandedSubdomainId((current) => current === domain.id ? null : domain.id)}
+                aria-expanded={expanded}
+                aria-controls={`admin-records-${domain.id}`}
+                title={expanded ? `Ẩn DNS records của ${domain.label}.takeshi.dev` : `Xem DNS records của ${domain.label}.takeshi.dev`}
+              >
+                <span className="admin-row-title">{domain.label}<span>.takeshi.dev</span></span>
+                <span className="admin-expand-mark" aria-hidden="true">{expanded ? '−' : '+'}</span>
+              </button>
+              <div className="admin-row-meta">
+                <span><b>Telegram</b>{domain.telegramUsername ? `@${domain.telegramUsername}` : 'Không có dữ liệu'}</span>
+                <span><b>Records con</b>{domain.recordCount}</span>
+                <span><b>Cập nhật</b>{formatDate(domain.updatedAt)}</span>
+              </div>
             </div>
-          </div>
-          <div className="admin-row-side">
-            <StatusBadge status={domain.status} label={domain.status === 'active' ? 'Đang dùng' : domain.status} />
-            {domain.requestId && <div className="admin-row-actions">{renderAdminAction(domain.requestId, 'reset_access', `Tạo access key mới cho ${domain.label}.takeshi.dev`, '↻')}</div>}
-          </div>
-        </article>)}</div>;
+            <div className="admin-row-side">
+              <StatusBadge status={domain.status} label={domain.status === 'active' ? 'Đang dùng' : domain.status} />
+              {domain.requestId && <div className="admin-row-actions">{renderAdminAction(domain.requestId, 'reset_access', `Tạo access key mới cho ${domain.label}.takeshi.dev`, '↻')}</div>}
+            </div>
+            {expanded && <section className="admin-records-inspector" id={`admin-records-${domain.id}`} aria-label={`DNS records của ${domain.label}.takeshi.dev`}>
+              <div className="admin-records-heading">
+                <div><p className="eyebrow"><span className="pixel-dot" /> DNS RECORDS</p><p>Toàn bộ record đang thuộc <strong>{domain.label}.takeshi.dev</strong>.</p></div>
+                <span className="status">{records.length} records</span>
+              </div>
+              {records.length === 0
+                ? <p className="admin-records-empty">Chưa có DNS record nào trong database.</p>
+                : <div className="admin-record-list">{records.map((record) => <article className={`admin-dns-record${record.isPrimary ? ' primary' : ''}`} key={record.id}>
+                  <span className="admin-record-type">{record.recordType}</span>
+                  <div className="admin-dns-record-main">
+                    <div className="admin-record-host"><strong>{recordHost(domain.label, record.recordName)}</strong>{record.isPrimary && <span>PRIMARY</span>}</div>
+                    <code>{record.content}{record.priority !== null ? ` · priority ${record.priority}` : ''}</code>
+                    <small>{ttlLabel(record.ttl)}{record.proxied ? ' · proxied' : ' · DNS only'}</small>
+                  </div>
+                </article>)}</div>}
+            </section>}
+          </article>;
+        })}</div>;
     }
 
     if (activeTab === 'pending-requests') {
