@@ -137,7 +137,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .admin-list-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; padding: 15px 17px; box-shadow: 3px 3px 0 #090c08; }
 .admin-list-row.expanded { border-color: #667d3d; background: linear-gradient(135deg, rgba(34, 43, 28, .98), rgba(23, 28, 21, .98)); }
 .admin-row-main { min-width: 0; }
-.admin-row-title { margin: 0; overflow-wrap: anywhere; font-family: var(--font-display), sans-serif; font-size: 16px; line-height: 1.2; letter-spacing: -.03em; }
+.admin-row-title { margin: 0; overflow-wrap: anywhere; font-family: var(--font-display), sans-serif; font-size: 18px; line-height: 1.15; letter-spacing: -.03em; }
 .admin-row-title span { color: var(--lime); }
 .admin-domain-toggle { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; border: 0; padding: 0; color: inherit; background: transparent; text-align: left; }
 .admin-domain-toggle:hover .admin-row-title { color: #f5fadf; }
