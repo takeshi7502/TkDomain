@@ -99,3 +99,31 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .check-row input.invalid { border-color: #b8675d; box-shadow: 0 0 0 1px #6e3731; }
 .rules-feedback, .access-key-feedback { display: block; margin: -11px 0 16px; font-size: 9px; line-height: 1.45; }
 .form-message.info { border-color: #69735e; color: #d5ddc7; background: #1d241a; }
+
+/* Compact admin navigation and the limited pending-request console. */
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.admin-tabs .button { min-height: 38px; padding: 0 12px; font-size: 9px; }
+.admin-tab-panel { min-height: 180px; }
+.status.pending { border-color: #90854a; color: #e5d890; background: #292717; }
+
+.pending-request-panel { padding: 21px; border-color: #797343; }
+.rejected-request-panel { border-color: #8b5149; }
+.pending-request-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.pending-request-head h2 { max-width: 430px; font-size: 25px; overflow-wrap: anywhere; }
+.pending-request-details { margin-bottom: 12px; }
+.pending-copy { margin: 16px 0; color: var(--muted); font-size: 10px; line-height: 1.65; }
+.pending-actions { margin-top: 16px; }
+.pending-actions .button { flex: 1; }
+.cancel-request-panel { margin-top: 18px; padding: 21px; border-color: #9b554d; background: #241815; }
+.cancel-request-panel h2 { color: #ffe2dc; font-size: 24px; overflow-wrap: anywhere; }
+.cancel-request-panel > p:not(.eyebrow) { margin: 12px 0 18px; color: #d6aaa3; font-size: 10px; line-height: 1.65; }
+.cancel-request-panel label { display: block; color: #f0c4bd; font-size: 10px; font-weight: 700; }
+.cancel-request-panel label code { color: #ffe8b6; }
+.cancel-request-panel .field { border-color: #89524b; }
+.cancel-request-panel .editor-actions { margin-top: 16px; }
+
+@media (max-width: 700px) {
+  .admin-tabs { display: grid; grid-template-columns: 1fr 1fr; }
+  .pending-request-panel, .cancel-request-panel { padding: 18px; }
+  .pending-request-head { flex-direction: column; }
+}

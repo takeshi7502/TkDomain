@@ -3,7 +3,7 @@ import type { ValidatedDnsRecord } from './dns';
 type CloudflareResult = {
   success?: boolean;
   errors?: Array<{ code?: number; message?: string }>;
-  result?: { id?: string };
+  result?: { id?: string; comment?: string; content?: string } | Array<{ id?: string; comment?: string; content?: string }>;
 };
 
 function getCloudflareConfig() {
@@ -33,8 +33,9 @@ async function callCloudflare(path: string, method: 'POST' | 'PUT' | 'DELETE', b
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const payload = await response.json().catch(() => ({})) as CloudflareResult;
+  const recordResult = Array.isArray(payload.result) ? undefined : payload.result;
   if (method === 'DELETE' && response.status === 404) return payload;
-  if (!response.ok || !payload.success || (method !== 'DELETE' && !payload.result?.id)) {
+  if (!response.ok || !payload.success || (method !== 'DELETE' && !recordResult?.id)) {
     throw new Error(payload.errors?.[0]?.message ?? 'Cloudflare DNS rejected this record.');
   }
   return payload;
@@ -42,7 +43,20 @@ async function callCloudflare(path: string, method: 'POST' | 'PUT' | 'DELETE', b
 
 export async function createCloudflareRecord(name: string, record: ValidatedDnsRecord, comment: string) {
   const payload = await callCloudflare('/dns_records', 'POST', recordPayload(name, record, comment));
-  return payload.result!.id!;
+  return (payload.result as { id: string }).id;
+}
+
+export async function findCloudflareRecordByComment(name: string, record: ValidatedDnsRecord, comment: string) {
+  const { token, zoneId } = getCloudflareConfig();
+  const query = new URLSearchParams({ name, type: record.recordType });
+  const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?${query.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const payload = await response.json().catch(() => ({})) as CloudflareResult;
+  if (!response.ok || !payload.success || !Array.isArray(payload.result)) {
+    throw new Error(payload.errors?.[0]?.message ?? 'Cloudflare DNS lookup failed.');
+  }
+  return payload.result.find((item) => item.comment === comment && item.content === record.content)?.id ?? null;
 }
 
 export async function updateCloudflareRecord(recordId: string, name: string, record: ValidatedDnsRecord, comment: string) {

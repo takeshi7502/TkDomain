@@ -4,10 +4,11 @@ import { and, eq, gt } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
-import { owners, ownerSessions } from '@/db/schema';
+import { owners, ownerSessions, pendingRequestSessions, subdomainRequests } from '@/db/schema';
 import { OWNER_ACCESS_KEY_PREFIX } from '@/lib/registry';
 
-const COOKIE_NAME = 'takeshi_owner_session';
+const OWNER_COOKIE_NAME = 'takeshi_owner_session';
+const PENDING_REQUEST_COOKIE_NAME = 'takeshi_pending_request_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
 function hashSecret(value: string) {
@@ -39,7 +40,7 @@ export async function createOwnerSession(ownerId: string) {
 }
 
 export function setOwnerSessionCookie(response: NextResponse, token: string) {
-  response.cookies.set(COOKIE_NAME, token, {
+  response.cookies.set(OWNER_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
@@ -49,11 +50,11 @@ export function setOwnerSessionCookie(response: NextResponse, token: string) {
 }
 
 export function clearOwnerSessionCookie(response: NextResponse) {
-  response.cookies.set(COOKIE_NAME, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
+  response.cookies.set(OWNER_COOKIE_NAME, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
 }
 
 export async function getOwnerSession(request: NextRequest) {
-  const token = request.cookies.get(COOKIE_NAME)?.value;
+  const token = request.cookies.get(OWNER_COOKIE_NAME)?.value;
   if (!token) return null;
   await ensureRegistrySchema();
   const now = Date.now();
@@ -67,8 +68,62 @@ export async function getOwnerSession(request: NextRequest) {
 }
 
 export async function removeOwnerSession(request: NextRequest) {
-  const token = request.cookies.get(COOKIE_NAME)?.value;
+  const token = request.cookies.get(OWNER_COOKIE_NAME)?.value;
   if (!token) return;
   await ensureRegistrySchema();
   await getDb().delete(ownerSessions).where(eq(ownerSessions.tokenHash, hashSecret(token)));
+}
+
+export async function createPendingRequestSession(requestId: string) {
+  await ensureRegistrySchema();
+  const rawToken = randomBytes(32).toString('base64url');
+  const now = Date.now();
+  await getDb().insert(pendingRequestSessions).values({
+    id: crypto.randomUUID(),
+    requestId,
+    tokenHash: hashSecret(rawToken),
+    createdAt: now,
+    expiresAt: now + SESSION_MAX_AGE_SECONDS * 1_000,
+  });
+  return rawToken;
+}
+
+export function setPendingRequestSessionCookie(response: NextResponse, token: string) {
+  response.cookies.set(PENDING_REQUEST_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    maxAge: SESSION_MAX_AGE_SECONDS,
+  });
+}
+
+export function clearPendingRequestSessionCookie(response: NextResponse) {
+  response.cookies.set(PENDING_REQUEST_COOKIE_NAME, '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 });
+}
+
+export async function getPendingRequestSession(request: NextRequest) {
+  const token = request.cookies.get(PENDING_REQUEST_COOKIE_NAME)?.value;
+  if (!token) return null;
+  await ensureRegistrySchema();
+  const now = Date.now();
+  const rows = await getDb()
+    .select({ request: subdomainRequests, sessionId: pendingRequestSessions.id })
+    .from(pendingRequestSessions)
+    .innerJoin(subdomainRequests, eq(pendingRequestSessions.requestId, subdomainRequests.id))
+    .where(and(eq(pendingRequestSessions.tokenHash, hashSecret(token)), gt(pendingRequestSessions.expiresAt, now)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function removePendingRequestSession(request: NextRequest) {
+  const token = request.cookies.get(PENDING_REQUEST_COOKIE_NAME)?.value;
+  if (!token) return;
+  await ensureRegistrySchema();
+  await getDb().delete(pendingRequestSessions).where(eq(pendingRequestSessions.tokenHash, hashSecret(token)));
+}
+
+export async function removePendingRequestSessionsForRequest(requestId: string) {
+  await ensureRegistrySchema();
+  await getDb().delete(pendingRequestSessions).where(eq(pendingRequestSessions.requestId, requestId));
 }

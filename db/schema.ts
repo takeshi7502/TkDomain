@@ -4,15 +4,21 @@ export const subdomainRequests = pgTable(
   'subdomain_requests',
   {
     id: text('id').primaryKey(),
-    subdomain: text('subdomain').notNull().unique(),
+    // A finished request remains in the audit log. A partial unique index in the
+    // migration prevents duplicate pending/active claims while allowing a name to
+    // be requested again after it was rejected, cancelled, or released.
+    subdomain: text('subdomain').notNull(),
     cnameTarget: text('cname_target').notNull(),
     githubHandle: text('github_handle'),
     email: text('email').notNull(),
     telegramUsername: text('telegram_username'),
     requestedAccessKeyHash: text('requested_access_key_hash'),
-    status: text('status', { enum: ['pending', 'active', 'rejected'] }).notNull().default('pending'),
+    status: text('status', { enum: ['pending', 'active', 'rejected', 'cancelled', 'released'] }).notNull().default('pending'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     reviewedAt: bigint('reviewed_at', { mode: 'number' }),
+    reviewStartedAt: bigint('review_started_at', { mode: 'number' }),
+    cancelledAt: bigint('cancelled_at', { mode: 'number' }),
+    releasedAt: bigint('released_at', { mode: 'number' }),
     reviewerNote: text('reviewer_note'),
     cloudflareRecordId: text('cloudflare_record_id'),
   },
@@ -96,11 +102,26 @@ export const ownerSessions = pgTable(
   (table) => [index('idx_owner_sessions_owner_expiry').on(table.ownerId, table.expiresAt)],
 );
 
+export const pendingRequestSessions = pgTable(
+  'pending_request_sessions',
+  {
+    id: text('id').primaryKey(),
+    requestId: text('request_id').notNull().references(() => subdomainRequests.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [index('idx_pending_request_sessions_request_expiry').on(table.requestId, table.expiresAt)],
+);
+
 export const dnsEvents = pgTable(
   'dns_events',
   {
     id: text('id').primaryKey(),
-    subdomainId: text('subdomain_id').notNull().references(() => subdomains.id, { onDelete: 'cascade' }),
+    // Events must outlive a deleted primary subdomain so the owner/admin audit
+    // trail remains intact.
+    subdomainId: text('subdomain_id').references(() => subdomains.id, { onDelete: 'set null' }),
+    domainLabel: text('domain_label'),
     recordId: text('record_id'),
     actorType: text('actor_type', { enum: ['admin', 'owner', 'system'] }).notNull(),
     action: text('action').notNull(),

@@ -27,15 +27,25 @@ async function createRegistrySchema() {
     status TEXT NOT NULL DEFAULT 'pending',
     created_at BIGINT NOT NULL,
     reviewed_at BIGINT,
+    review_started_at BIGINT,
+    cancelled_at BIGINT,
+    released_at BIGINT,
     reviewer_note TEXT,
     cloudflare_record_id TEXT
   )`);
-  await sql.query('CREATE UNIQUE INDEX IF NOT EXISTS subdomain_requests_subdomain_unique ON subdomain_requests (subdomain)');
+  // Keep every finished request as history, while keeping a name exclusive
+  // during its pending/active lifecycle.
+  await sql.query('DROP INDEX IF EXISTS subdomain_requests_subdomain_unique');
+  await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_subdomain_requests_open_subdomain ON subdomain_requests (subdomain) WHERE status IN ('pending', 'active')");
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_status_created ON subdomain_requests (status, created_at)');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_email_created ON subdomain_requests (email, created_at)');
   await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS telegram_username TEXT');
   await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS requested_access_key_hash TEXT');
+  await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS review_started_at BIGINT');
+  await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS cancelled_at BIGINT');
+  await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS released_at BIGINT');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_telegram_created ON subdomain_requests (telegram_username, created_at)');
+  await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_subdomain_requests_pending_access_key_unique ON subdomain_requests (requested_access_key_hash) WHERE status = 'pending' AND requested_access_key_hash IS NOT NULL");
   await sql.query(`CREATE TABLE IF NOT EXISTS owners (
     id TEXT PRIMARY KEY NOT NULL,
     email TEXT NOT NULL UNIQUE,
@@ -47,6 +57,7 @@ async function createRegistrySchema() {
     updated_at BIGINT NOT NULL
   )`);
   await sql.query('CREATE INDEX IF NOT EXISTS idx_owners_access_key_hash ON owners (access_key_hash)');
+  await sql.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_owners_access_key_hash_unique ON owners (access_key_hash) WHERE access_key_hash IS NOT NULL');
   await sql.query('ALTER TABLE owners ADD COLUMN IF NOT EXISTS telegram_username TEXT');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_owners_telegram_username ON owners (telegram_username)');
   await sql.query(`CREATE TABLE IF NOT EXISTS subdomains (
@@ -90,15 +101,59 @@ async function createRegistrySchema() {
     created_at BIGINT NOT NULL
   )`);
   await sql.query('CREATE INDEX IF NOT EXISTS idx_owner_sessions_owner_expiry ON owner_sessions (owner_id, expires_at)');
+  await sql.query(`CREATE TABLE IF NOT EXISTS pending_request_sessions (
+    id TEXT PRIMARY KEY NOT NULL,
+    request_id TEXT NOT NULL REFERENCES subdomain_requests(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at BIGINT NOT NULL,
+    created_at BIGINT NOT NULL
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_pending_request_sessions_request_expiry ON pending_request_sessions (request_id, expires_at)');
   await sql.query(`CREATE TABLE IF NOT EXISTS dns_events (
     id TEXT PRIMARY KEY NOT NULL,
-    subdomain_id TEXT NOT NULL REFERENCES subdomains(id) ON DELETE CASCADE,
+    subdomain_id TEXT REFERENCES subdomains(id) ON DELETE SET NULL,
+    domain_label TEXT,
     record_id TEXT,
     actor_type TEXT NOT NULL,
     action TEXT NOT NULL,
     details JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at BIGINT NOT NULL
   )`);
+  await sql.query('ALTER TABLE dns_events ADD COLUMN IF NOT EXISTS domain_label TEXT');
+  await sql.query('ALTER TABLE dns_events ALTER COLUMN subdomain_id DROP NOT NULL');
+  await sql.query(`UPDATE dns_events AS event
+    SET domain_label = subdomain.label
+    FROM subdomains AS subdomain
+    WHERE event.subdomain_id = subdomain.id
+      AND event.domain_label IS NULL`);
+  await sql.query(`DO $$
+  DECLARE old_constraint TEXT;
+  BEGIN
+    SELECT conname INTO old_constraint
+    FROM pg_constraint
+    WHERE conrelid = 'dns_events'::regclass
+      AND contype = 'f'
+      AND confrelid = 'subdomains'::regclass
+      AND confdeltype <> 'n'
+    LIMIT 1;
+
+    IF old_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE dns_events DROP CONSTRAINT %I', old_constraint);
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_constraint
+      WHERE conrelid = 'dns_events'::regclass
+        AND contype = 'f'
+        AND confrelid = 'subdomains'::regclass
+        AND confdeltype = 'n'
+    ) THEN
+      ALTER TABLE dns_events
+        ADD CONSTRAINT dns_events_subdomain_id_fkey
+        FOREIGN KEY (subdomain_id) REFERENCES subdomains(id) ON DELETE SET NULL;
+    END IF;
+  END $$`);
   await sql.query('CREATE INDEX IF NOT EXISTS idx_dns_events_subdomain_created ON dns_events (subdomain_id, created_at)');
 
   // Bring already-approved CNAMEs into the owner panel without changing their DNS records.

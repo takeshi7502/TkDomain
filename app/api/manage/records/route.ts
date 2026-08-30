@@ -17,6 +17,16 @@ async function ownedSubdomain(ownerId: string, subdomainId: string) {
   return getDb().query.subdomains.findFirst({ where: and(eq(subdomains.id, subdomainId), eq(subdomains.ownerId, ownerId), eq(subdomains.status, 'active')) });
 }
 
+function auditRecordSummary(record: { recordType: string; recordName: string; ttl: number; proxied: boolean; priority: number | null }) {
+  return {
+    type: record.recordType,
+    name: record.recordName,
+    ttl: record.ttl,
+    proxied: record.proxied,
+    priority: record.priority,
+  };
+}
+
 export async function GET(request: NextRequest) {
   const owner = await currentOwner(request);
   if (!owner) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
@@ -53,7 +63,16 @@ export async function POST(request: NextRequest) {
   const now = Date.now();
   const id = crypto.randomUUID();
   await getDb().insert(dnsRecords).values({ id, subdomainId: domain.id, ...validated.value, isPrimary: false, cloudflareRecordId, createdAt: now, updatedAt: now });
-  await getDb().insert(dnsEvents).values({ id: crypto.randomUUID(), subdomainId: domain.id, recordId: id, actorType: 'owner', action: 'record_created', details: { type: validated.value.recordType, name: validated.value.recordName }, createdAt: now });
+  await getDb().insert(dnsEvents).values({
+    id: crypto.randomUUID(),
+    subdomainId: domain.id,
+    domainLabel: domain.label,
+    recordId: id,
+    actorType: 'owner',
+    action: 'child_record_created',
+    details: { ...auditRecordSummary(validated.value), isPrimary: false },
+    createdAt: now,
+  });
   return NextResponse.json({ ok: true, record: { id, cloudflareRecordId, ...validated.value, createdAt: now, updatedAt: now } }, { status: 201 });
 }
 
@@ -76,7 +95,25 @@ export async function PATCH(request: NextRequest) {
   }
   const now = Date.now();
   await getDb().update(dnsRecords).set({ ...validated.value, updatedAt: now }).where(eq(dnsRecords.id, current.record.id));
-  await getDb().insert(dnsEvents).values({ id: crypto.randomUUID(), subdomainId: current.domain.id, recordId: current.record.id, actorType: 'owner', action: 'record_updated', details: { type: validated.value.recordType, name: validated.value.recordName }, createdAt: now });
+  await getDb().insert(dnsEvents).values({
+    id: crypto.randomUUID(),
+    subdomainId: current.domain.id,
+    domainLabel: current.domain.label,
+    recordId: current.record.id,
+    actorType: 'owner',
+    action: current.record.isPrimary ? 'primary_record_updated' : 'child_record_updated',
+    details: {
+      before: {
+        ...auditRecordSummary(current.record),
+      },
+      after: {
+        ...auditRecordSummary(validated.value),
+      },
+      contentChanged: current.record.content !== validated.value.content,
+      isPrimary: current.record.isPrimary,
+    },
+    createdAt: now,
+  });
   return NextResponse.json({ ok: true });
 }
 
@@ -96,6 +133,15 @@ export async function DELETE(request: NextRequest) {
   }
   const now = Date.now();
   await getDb().delete(dnsRecords).where(eq(dnsRecords.id, current.record.id));
-  await getDb().insert(dnsEvents).values({ id: crypto.randomUUID(), subdomainId: current.domain.id, recordId: current.record.id, actorType: 'owner', action: 'record_deleted', details: { type: current.record.recordType, name: current.record.recordName }, createdAt: now });
+  await getDb().insert(dnsEvents).values({
+    id: crypto.randomUUID(),
+    subdomainId: current.domain.id,
+    domainLabel: current.domain.label,
+    recordId: current.record.id,
+    actorType: 'owner',
+    action: 'child_record_deleted',
+    details: { ...auditRecordSummary(current.record), isPrimary: false },
+    createdAt: now,
+  });
   return NextResponse.json({ ok: true });
 }
