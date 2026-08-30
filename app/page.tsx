@@ -90,10 +90,12 @@ export default function Home() {
         <h1>Claim your<br /><span>.takeshi.dev</span></h1>
         <p>Đăng ký subdomain miễn phí cho project, portfolio hoặc trang cá nhân của bạn.</p>
         <div className="hero-name-check">
-          <div className="field-combo"><input id="hero-subdomain" aria-label="Kiểm tra subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} autoComplete="off" /><b>.takeshi.dev</b></div>
+          <div className="hero-check-row">
+            <div className="field-combo"><input id="hero-subdomain" aria-label="Kiểm tra subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} autoComplete="off" /><b>.takeshi.dev</b></div>
+            <a className="button secondary hero-check-button" href="#claim" onClick={(event) => { if (availability !== 'available') { event.preventDefault(); if (availability !== 'checking') void checkAvailability(); } }} aria-disabled={availability === 'checking'}>{heroButtonLabel}</a>
+          </div>
           <small aria-live="polite" className={availability === 'available' ? 'field-good' : availability === 'taken' || availability === 'error' ? 'field-bad' : undefined}>{availabilityCopy}</small>
         </div>
-        <a className="button secondary" href="#claim" onClick={(event) => { if (availability !== 'available') { event.preventDefault(); if (availability !== 'checking') void checkAvailability(); } }} aria-disabled={availability === 'checking'}>{heroButtonLabel}</a>
       </section>
 
       <section className="content-grid" id="claim">
