@@ -64,7 +64,7 @@ export default function Home() {
           <span className="brand-block" aria-hidden="true"><i /><i /><i /><i /></span>
           <span>TAKESHI <span className="brand-dim">DOMAINS</span></span>
         </a>
-        <nav aria-label="Main navigation"><a href="#how">Cách hoạt động</a><a href="#rules">Quy định</a><a href="/manage">Quản lý DNS</a><a href="/admin">Admin</a></nav>
+        <nav aria-label="Main navigation"><a href="#how">Cách hoạt động</a><a href="#rules">Quy định</a><a href="/manage">Quản lý DNS</a></nav>
       </header>
 
       <section className="hero" id="top">

@@ -8,7 +8,7 @@ button, input { font: inherit; } button { cursor: pointer; }
 a { color: inherit; }
 .site-shell { min-height: 100vh; padding: 0 24px; background-color: var(--bg); background-image: linear-gradient(rgba(159, 185, 99, .055) 1px, transparent 1px), linear-gradient(90deg, rgba(159, 185, 99, .055) 1px, transparent 1px); background-size: 32px 32px; }
 .site-header, .hero, .content-grid, footer, .admin-shell { width: min(980px, 100%); margin: 0 auto; }
-.site-header { min-height: 74px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+.site-header { position: sticky; top: 0; z-index: 20; min-height: 74px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); background: rgba(16, 19, 15, .96); }
 .brand { display: inline-flex; gap: 10px; align-items: center; text-decoration: none; font-size: 13px; font-weight: 800; letter-spacing: .02em; }.brand-dim { color: var(--muted); font-weight: 500; }
 .brand-block { display: grid; width: 18px; height: 18px; grid-template-columns: repeat(2, 1fr); gap: 2px; transform: rotate(45deg); }.brand-block i { background: var(--lime); box-shadow: inset -2px -2px var(--lime-dark); }.brand-block i:nth-child(2), .brand-block i:nth-child(3) { background: #88a34b; }.brand-block i:nth-child(4) { background: #d7ee91; }
 nav { display: flex; gap: 20px; } nav a { color: var(--muted); font-size: 11px; text-decoration: none; } nav a:hover { color: var(--lime); }
