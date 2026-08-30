@@ -79,3 +79,13 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
   .hero-check-button { width: 100%; margin-top: 10px; }
   .primary-record-summary { grid-template-columns: 36px minmax(0, 1fr) auto; }
 }
+
+.request-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.access-key-combo { gap: 8px; padding-left: 12px; }
+.access-key-combo b { color: var(--lime); }
+.visibility-toggle { display: inline-grid; flex: 0 0 28px; width: 28px; height: 28px; place-items: center; border: 0; padding: 0; color: var(--muted); background: transparent; font: 700 16px/1 var(--font-mono), monospace; }
+.visibility-toggle:hover { color: var(--lime); }
+.key-input { display: flex; align-items: center; gap: 4px; }
+.key-input .field { min-width: 0; flex: 1; }
+.lost-key-link { display: block; margin: -7px 0 16px; color: var(--lime); font-size: 9px; text-decoration: underline; text-underline-offset: 3px; }
+.lost-key-link:hover { color: #d7ee91; }

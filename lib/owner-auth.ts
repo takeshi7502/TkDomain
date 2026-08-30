@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
 import { owners, ownerSessions } from '@/db/schema';
+import { OWNER_ACCESS_KEY_PREFIX } from '@/lib/registry';
 
 const COOKIE_NAME = 'takeshi_owner_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
@@ -16,7 +17,7 @@ function hashSecret(value: string) {
 }
 
 export function createOwnerAccessKey() {
-  return `td_owner_${randomBytes(24).toString('base64url')}`;
+  return `${OWNER_ACCESS_KEY_PREFIX}k${randomBytes(12).toString('hex')}9`;
 }
 
 export function hashOwnerAccessKey(value: string) {

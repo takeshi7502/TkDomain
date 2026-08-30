@@ -7,8 +7,7 @@ type RequestRecord = {
   id: string;
   subdomain: string;
   cnameTarget: string;
-  githubHandle: string | null;
-  email: string;
+  telegramUsername: string | null;
   status: 'pending' | 'active' | 'rejected';
   createdAt: number;
   reviewerNote: string | null;
@@ -55,13 +54,13 @@ export default function AdminPage() {
         headers: { 'Content-Type': 'application/json', 'x-registry-admin-key': key },
         body: JSON.stringify({ id, action }),
       });
-      const payload = await response.json() as { error?: string; ownerAccessKey?: string; subdomain?: string };
+      const payload = await response.json() as { error?: string; ownerAccessKey?: string; accessKeyProvided?: boolean; subdomain?: string };
       if (!response.ok) throw new Error(payload.error ?? 'Không thể cập nhật request.');
       if (payload.ownerAccessKey && payload.subdomain) {
         setAccessKey({ subdomain: payload.subdomain, value: payload.ownerAccessKey });
         setMessage('DNS đã sẵn sàng. Gửi access key dưới đây riêng cho chủ subdomain.');
       } else {
-        setMessage(action === 'reject' ? 'Đã từ chối request.' : 'Đã cập nhật request.');
+        setMessage(action === 'reject' ? 'Đã từ chối request.' : payload.accessKeyProvided ? 'DNS đã sẵn sàng. Chủ subdomain sẽ dùng access key đã tự đặt khi đăng ký.' : 'Đã cập nhật request.');
       }
       await loadRequests(undefined, false);
     } catch (error) {
@@ -82,7 +81,7 @@ export default function AdminPage() {
         </form>
         {message && <p className={`form-message ${message.includes('Đã') || message.includes('DNS đã') ? 'success' : 'error'} admin-message`}>{message}</p>}
         {accessKey && <section className="panel owner-key-panel"><p className="eyebrow"><span className="pixel-dot" /> OWNER ACCESS KEY</p><h2>{accessKey.subdomain}</h2><code>{accessKey.value}</code><p className="note">Gửi key này qua kênh riêng. Tạo key mới sẽ hủy các phiên panel cũ.</p><button type="button" className="text-button" onClick={() => setAccessKey(null)}>Đã sao chép</button></section>}
-        {requests.length === 0 ? <div className="panel empty-state">Nhập admin key để tải requests.</div> : <div className="request-list">{requests.map((request) => <article className="panel request-card" key={request.id}><div className="request-card-head"><div><h2>{request.subdomain}<span>.takeshi.dev</span></h2><p className="note">Gửi lúc {formatDate(request.createdAt)}</p></div><span className={`status ${request.status}`}>{request.status}</span></div><div className="request-details"><div>CNAME<strong>{request.cnameTarget}</strong></div><div>Email<strong>{request.email}</strong></div><div>GitHub<strong>{request.githubHandle || '—'}</strong></div></div>{request.reviewerNote && <p className="note">Ghi chú: {request.reviewerNote}</p>}{request.status === 'pending' && <div className="request-card-actions"><button type="button" className="button" onClick={() => review(request.id, 'provision')} disabled={actingOn === request.id}>{actingOn === request.id ? 'Đang xử lý...' : 'Duyệt + tạo DNS'}</button><button type="button" className="button reject" onClick={() => review(request.id, 'reject')} disabled={actingOn === request.id}>Từ chối</button></div>}{request.status === 'active' && <div className="request-card-actions"><button type="button" className="button secondary-action" onClick={() => review(request.id, 'reset_access')} disabled={actingOn === request.id}>{actingOn === request.id ? 'Đang tạo...' : 'Tạo access key'}</button></div>}</article>)}</div>}
+        {requests.length === 0 ? <div className="panel empty-state">Nhập admin key để tải requests.</div> : <div className="request-list">{requests.map((request) => <article className="panel request-card" key={request.id}><div className="request-card-head"><div><h2>{request.subdomain}<span>.takeshi.dev</span></h2><p className="note">Gửi lúc {formatDate(request.createdAt)}</p></div><span className={`status ${request.status}`}>{request.status}</span></div><div className="request-details"><div>CNAME<strong>{request.cnameTarget}</strong></div><div>Telegram<strong>{request.telegramUsername ? `@${request.telegramUsername}` : 'Legacy request'}</strong></div></div>{request.reviewerNote && <p className="note">Ghi chú: {request.reviewerNote}</p>}{request.status === 'pending' && <div className="request-card-actions"><button type="button" className="button" onClick={() => review(request.id, 'provision')} disabled={actingOn === request.id}>{actingOn === request.id ? 'Đang xử lý...' : 'Duyệt + tạo DNS'}</button><button type="button" className="button reject" onClick={() => review(request.id, 'reject')} disabled={actingOn === request.id}>Từ chối</button></div>}{request.status === 'active' && <div className="request-card-actions"><button type="button" className="button secondary-action" onClick={() => review(request.id, 'reset_access')} disabled={actingOn === request.id}>{actingOn === request.id ? 'Đang tạo...' : 'Tạo access key'}</button></div>}</article>)}</div>}
       </div>
     </main>
   );

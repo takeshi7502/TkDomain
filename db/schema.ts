@@ -8,6 +8,8 @@ export const subdomainRequests = pgTable(
     cnameTarget: text('cname_target').notNull(),
     githubHandle: text('github_handle'),
     email: text('email').notNull(),
+    telegramUsername: text('telegram_username'),
+    requestedAccessKeyHash: text('requested_access_key_hash'),
     status: text('status', { enum: ['pending', 'active', 'rejected'] }).notNull().default('pending'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     reviewedAt: bigint('reviewed_at', { mode: 'number' }),
@@ -17,6 +19,7 @@ export const subdomainRequests = pgTable(
   (table) => [
     index('idx_subdomain_requests_status_created').on(table.status, table.createdAt),
     index('idx_subdomain_requests_email_created').on(table.email, table.createdAt),
+    index('idx_subdomain_requests_telegram_created').on(table.telegramUsername, table.createdAt),
   ],
 );
 
@@ -26,6 +29,7 @@ export const owners = pgTable(
     id: text('id').primaryKey(),
     email: text('email').notNull().unique(),
     githubHandle: text('github_handle'),
+    telegramUsername: text('telegram_username'),
     accessKeyHash: text('access_key_hash'),
     status: text('status', { enum: ['active', 'disabled'] }).notNull().default('active'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),

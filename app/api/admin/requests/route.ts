@@ -13,18 +13,37 @@ function authorized(request: NextRequest) {
   return Boolean(process.env.REGISTRY_ADMIN_KEY && key && key === process.env.REGISTRY_ADMIN_KEY);
 }
 
-async function findOrCreateOwner(email: string, githubHandle: string | null) {
+async function findOrCreateOwner(requestRecord: typeof subdomainRequests.$inferSelect) {
   const db = getDb();
-  let owner = await db.query.owners.findFirst({ where: eq(owners.email, email) });
-  let accessKey: string | null = null;
   const now = Date.now();
+
+  if (requestRecord.requestedAccessKeyHash) {
+    const keyInUse = await db.query.owners.findFirst({ where: eq(owners.accessKeyHash, requestRecord.requestedAccessKeyHash), columns: { id: true } });
+    if (keyInUse) throw new Error('Access key này đã được dùng bởi một owner khác.');
+    const id = crypto.randomUUID();
+    const owner = {
+      id,
+      email: `owner:${requestRecord.id}`,
+      githubHandle: null,
+      telegramUsername: requestRecord.telegramUsername,
+      accessKeyHash: requestRecord.requestedAccessKeyHash,
+      status: 'active' as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.insert(owners).values(owner);
+    return { owner, accessKey: null };
+  }
+
+  let owner = await db.query.owners.findFirst({ where: eq(owners.email, requestRecord.email) });
+  let accessKey: string | null = null;
 
   if (!owner) {
     accessKey = createOwnerAccessKey();
     const id = crypto.randomUUID();
     const accessKeyHash = hashOwnerAccessKey(accessKey);
-    await db.insert(owners).values({ id, email, githubHandle, accessKeyHash, status: 'active', createdAt: now, updatedAt: now });
-    owner = { id, email, githubHandle, accessKeyHash, status: 'active' as const, createdAt: now, updatedAt: now };
+    await db.insert(owners).values({ id, email: requestRecord.email, githubHandle: requestRecord.githubHandle, telegramUsername: null, accessKeyHash, status: 'active', createdAt: now, updatedAt: now });
+    owner = { id, email: requestRecord.email, githubHandle: requestRecord.githubHandle, telegramUsername: null, accessKeyHash, status: 'active' as const, createdAt: now, updatedAt: now };
   } else if (!owner.accessKeyHash) {
     accessKey = createOwnerAccessKey();
     await db.update(owners).set({ accessKeyHash: hashOwnerAccessKey(accessKey), updatedAt: now }).where(eq(owners.id, owner.id));
@@ -69,6 +88,11 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ ok: true, status: 'rejected' });
   }
 
+  if (requestRecord.requestedAccessKeyHash) {
+    const keyInUse = await db.query.owners.findFirst({ where: eq(owners.accessKeyHash, requestRecord.requestedAccessKeyHash), columns: { id: true } });
+    if (keyInUse) return NextResponse.json({ error: 'Access key này đã được dùng bởi một owner khác.' }, { status: 409 });
+  }
+
   const initialRecord: ValidatedDnsRecord = { recordType: 'CNAME', recordName: '@', content: requestRecord.cnameTarget, ttl: 1, proxied: false, priority: null };
   let cloudflareRecordId: string;
   try {
@@ -77,7 +101,13 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Cloudflare DNS rejected this record.' }, { status: 502 });
   }
 
-  const { owner, accessKey } = await findOrCreateOwner(requestRecord.email, requestRecord.githubHandle);
+  let ownerResult: Awaited<ReturnType<typeof findOrCreateOwner>>;
+  try {
+    ownerResult = await findOrCreateOwner(requestRecord);
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Không thể tạo owner cho request này.' }, { status: 409 });
+  }
+  const { owner, accessKey } = ownerResult;
   const now = Date.now();
   const subdomainId = crypto.randomUUID();
   await db.insert(subdomains).values({ id: subdomainId, label: requestRecord.subdomain, ownerId: owner.id, status: 'active', requestId: requestRecord.id, createdAt: now, updatedAt: now });
@@ -92,5 +122,5 @@ export async function PATCH(request: NextRequest) {
   });
   await db.update(subdomainRequests).set({ status: 'active', reviewerNote: note, reviewedAt: now, cloudflareRecordId }).where(eq(subdomainRequests.id, requestRecord.id));
 
-  return NextResponse.json({ ok: true, status: 'active', recordId: cloudflareRecordId, ownerAccessKey: accessKey, subdomain: `${requestRecord.subdomain}.${BASE_DOMAIN}` });
+  return NextResponse.json({ ok: true, status: 'active', recordId: cloudflareRecordId, ownerAccessKey: accessKey, accessKeyProvided: Boolean(requestRecord.requestedAccessKeyHash), subdomain: `${requestRecord.subdomain}.${BASE_DOMAIN}` });
 }

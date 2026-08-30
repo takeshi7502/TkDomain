@@ -6,7 +6,7 @@ import Link from 'next/link';
 type RecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'MX' | 'CAA';
 type DnsRecord = { id: string; recordType: RecordType; recordName: string; content: string; ttl: number; proxied: boolean; priority: number | null; isPrimary: boolean };
 type ManagedSubdomain = { id: string; label: string; status: string; records: DnsRecord[] };
-type SessionData = { owner: { email: string; githubHandle: string | null }; subdomains: Array<{ id: string; label: string; status: string }> };
+type SessionData = { owner: { telegramUsername: string | null }; subdomains: Array<{ id: string; label: string; status: string }> };
 type EditableRecord = { recordType: RecordType; recordName: string; content: string; ttl: number; proxied: boolean; priority: string };
 
 const proxyable = new Set<RecordType>(['A', 'AAAA', 'CNAME']);
@@ -24,6 +24,7 @@ export default function ManagePage() {
   const [session, setSession] = useState<SessionData | null>(null);
   const [subdomains, setSubdomains] = useState<ManagedSubdomain[]>([]);
   const [accessKey, setAccessKey] = useState('');
+  const [showAccessKey, setShowAccessKey] = useState(false);
   const [selectedId, setSelectedId] = useState('');
   const [record, setRecord] = useState<EditableRecord>(blankRecord());
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -167,12 +168,12 @@ export default function ManagePage() {
   }
 
   if (!session) {
-    return <main className="manage-page"><div className="manage-shell narrow-shell"><Link href="/" className="back-link">← Về trang đăng ký</Link><div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>Nhập access key mà admin gửi riêng cho bạn. Key chỉ tạo phiên trên thiết bị này.</p></div><form className="panel access-form" onSubmit={login}><label htmlFor="owner-key">Owner access key<input id="owner-key" className="field" type="password" value={accessKey} onChange={(event) => setAccessKey(event.target.value)} autoComplete="off" required /></label>{message && <p className={`form-message ${positiveMessage ? 'success' : 'error'}`}>{message}</p>}<button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang mở...' : 'Mở DNS panel'}</button></form></div></main>;
+    return <main className="manage-page"><div className="manage-shell narrow-shell"><Link href="/" className="back-link">← Về trang đăng ký</Link><div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>Nhập access key bạn đã tự đặt khi đăng ký. Key chỉ tạo phiên trên thiết bị này.</p></div><form className="panel access-form" onSubmit={login}><label htmlFor="owner-key">Owner access key<div className="key-input"><input id="owner-key" className="field" type={showAccessKey ? 'text' : 'password'} placeholder="tk-your-access-key" value={accessKey} onChange={(event) => setAccessKey(event.target.value)} autoComplete="off" required /><button className="visibility-toggle" type="button" onClick={() => setShowAccessKey((visible) => !visible)} aria-label={showAccessKey ? 'Ẩn access key' : 'Hiện access key'} title={showAccessKey ? 'Ẩn access key' : 'Hiện access key'}>{showAccessKey ? '⊙' : '◉'}</button></div></label><a className="lost-key-link" href="https://t.me/jinndesu" target="_blank" rel="noreferrer">Quên hoặc mất access key? Liên hệ @jinndesu</a>{message && <p className={`form-message ${positiveMessage ? 'success' : 'error'}`}>{message}</p>}<button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? 'Đang mở...' : 'Mở DNS panel'}</button></form></div></main>;
   }
 
   return <main className="manage-page"><div className="manage-shell">
     <header className="manage-header"><Link href="/" className="back-link">← Takeshi Domains</Link><button className="text-button" type="button" onClick={logout}>Đăng xuất</button></header>
-    <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>{session.owner.email}<br />Chỉ các record thuộc subdomain của bạn mới hiển thị ở đây.</p></div>
+    <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>{session.owner.telegramUsername ? `@${session.owner.telegramUsername}` : 'Owner account'}<br />Chỉ các record thuộc subdomain của bạn mới hiển thị ở đây.</p></div>
     {subdomains.length === 0 ? <><div className="panel empty-state">Chưa có subdomain active cho access key này.</div>{message && <p className={`form-message ${positiveMessage ? 'success' : 'error'}`}>{message}</p>}</> : <>
       <div className="domain-tabs" role="tablist">{subdomains.map((domain) => <button type="button" key={domain.id} className={domain.id === selected?.id ? 'domain-tab active' : 'domain-tab'} onClick={() => { setSelectedId(domain.id); resetForm(); setDeletePanelOpen(false); }}>{domain.label}.takeshi.dev</button>)}</div>
       {selected && <>

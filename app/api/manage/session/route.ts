@@ -7,7 +7,7 @@ import { clearOwnerSessionCookie, createOwnerSession, getOwnerSession, hashOwner
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 
 function ownerProfile(owner: typeof owners.$inferSelect) {
-  return { email: owner.email, githubHandle: owner.githubHandle };
+  return { telegramUsername: owner.telegramUsername };
 }
 
 export async function GET(request: NextRequest) {

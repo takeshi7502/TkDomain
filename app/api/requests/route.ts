@@ -1,7 +1,8 @@
-import { and, count, eq, gt } from 'drizzle-orm';
+import { and, count, eq, gt, ne } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureRegistrySchema, getDb } from '@/db';
-import { subdomainRequests } from '@/db/schema';
+import { owners, subdomainRequests } from '@/db/schema';
+import { hashOwnerAccessKey } from '@/lib/owner-auth';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 import { isValidSubdomain, normalizeSubdomain, validateClaim } from '@/lib/registry';
 
@@ -32,24 +33,33 @@ export async function POST(request: NextRequest) {
   await ensureRegistrySchema();
   const db = getDb();
   const now = Date.now();
+  const accessKeyHash = hashOwnerAccessKey(result.value.accessKey);
   const [{ value: requestCount }] = await db
     .select({ value: count() })
     .from(subdomainRequests)
-    .where(and(eq(subdomainRequests.email, result.value.email), gt(subdomainRequests.createdAt, now - 86_400_000)));
+    .where(and(eq(subdomainRequests.telegramUsername, result.value.telegramUsername), gt(subdomainRequests.createdAt, now - 86_400_000)));
 
-  if (requestCount >= 3) return NextResponse.json({ error: 'Email này đã gửi quá nhiều request hôm nay. Hãy thử lại sau.' }, { status: 429 });
+  if (requestCount >= 3) return NextResponse.json({ error: 'Telegram này đã gửi quá nhiều request hôm nay. Hãy thử lại sau.' }, { status: 429 });
 
   const existing = await db.query.subdomainRequests.findFirst({
     where: eq(subdomainRequests.subdomain, result.value.subdomain),
-    columns: { status: true },
+    columns: { id: true, status: true },
   });
   if (existing && existing.status !== 'rejected') return NextResponse.json({ error: 'Subdomain này đã có người đăng ký hoặc đang chờ duyệt.' }, { status: 409 });
 
+  const keyInUse = await db.query.owners.findFirst({ where: eq(owners.accessKeyHash, accessKeyHash), columns: { id: true } });
+  if (keyInUse) return NextResponse.json({ error: 'Access key này đã được dùng. Hãy chọn key khác.' }, { status: 409 });
+  const pendingKey = await db.query.subdomainRequests.findFirst({
+    where: and(eq(subdomainRequests.requestedAccessKeyHash, accessKeyHash), ne(subdomainRequests.status, 'rejected')),
+    columns: { id: true },
+  });
+  if (pendingKey && pendingKey.id !== existing?.id) return NextResponse.json({ error: 'Access key này đang được dùng cho một request khác. Hãy chọn key khác.' }, { status: 409 });
+
   const id = crypto.randomUUID();
   if (existing?.status === 'rejected') {
-    await db.update(subdomainRequests).set({ cnameTarget: result.value.cnameTarget, githubHandle: result.value.githubHandle, email: result.value.email, status: 'pending', createdAt: now, reviewedAt: null, reviewerNote: null, cloudflareRecordId: null }).where(eq(subdomainRequests.subdomain, result.value.subdomain));
+    await db.update(subdomainRequests).set({ cnameTarget: result.value.cnameTarget, githubHandle: null, email: `telegram:${result.value.telegramUsername}`, telegramUsername: result.value.telegramUsername, requestedAccessKeyHash: accessKeyHash, status: 'pending', createdAt: now, reviewedAt: null, reviewerNote: null, cloudflareRecordId: null }).where(eq(subdomainRequests.subdomain, result.value.subdomain));
   } else {
-    await db.insert(subdomainRequests).values({ id, ...result.value, status: 'pending', createdAt: now });
+    await db.insert(subdomainRequests).values({ id, subdomain: result.value.subdomain, cnameTarget: result.value.cnameTarget, githubHandle: null, email: `telegram:${result.value.telegramUsername}`, telegramUsername: result.value.telegramUsername, requestedAccessKeyHash: accessKeyHash, status: 'pending', createdAt: now });
   }
   return NextResponse.json({ ok: true, requestId: existing ? result.value.subdomain : id, status: 'pending' }, { status: 201 });
 }

@@ -12,8 +12,9 @@ type AvailabilityState = 'idle' | 'checking' | 'available' | 'taken' | 'error';
 export default function Home() {
   const [subdomain, setSubdomain] = useState('');
   const [cnameTarget, setCnameTarget] = useState('');
-  const [githubHandle, setGithubHandle] = useState('');
-  const [email, setEmail] = useState('');
+  const [telegramUsername, setTelegramUsername] = useState('');
+  const [accessKeySuffix, setAccessKeySuffix] = useState('');
+  const [showAccessKey, setShowAccessKey] = useState(false);
   const [acceptedRules, setAcceptedRules] = useState(false);
   const [website, setWebsite] = useState('');
   const [submission, setSubmission] = useState<SubmissionState>({ type: 'idle' });
@@ -58,7 +59,7 @@ export default function Home() {
       const response = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subdomain, cnameTarget, githubHandle, email, acceptedRules, website }),
+        body: JSON.stringify({ subdomain, cnameTarget, telegramUsername, accessKey: `tk-${accessKeySuffix}`, acceptedRules, website }),
       });
       const payload = await response.json() as { error?: string; requestId?: string };
       if (!response.ok || !payload.requestId) {
@@ -110,8 +111,8 @@ export default function Home() {
             <small>Thêm custom domain tại dịch vụ host của bạn trước khi gửi yêu cầu.</small>
           </label>
           <div className="form-pair">
-            <label htmlFor="github-handle">GitHub (không bắt buộc)<input id="github-handle" className="field" placeholder="username" value={githubHandle} onChange={(event) => setGithubHandle(event.target.value)} /></label>
-            <label htmlFor="email">Email liên hệ<input id="email" className="field" type="email" placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+            <label htmlFor="telegram-username">Telegram username<input id="telegram-username" className="field" placeholder="username" value={telegramUsername} onChange={(event) => setTelegramUsername(event.target.value.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32))} autoComplete="username" required /><small>Nhập username, không cần dấu @.</small></label>
+            <label htmlFor="access-key">Access key<div className="field-combo access-key-combo"><b>tk-</b><input id="access-key" type={showAccessKey ? 'text' : 'password'} placeholder="your-key-part" value={accessKeySuffix} onChange={(event) => setAccessKeySuffix(event.target.value.replace(/[^a-z0-9._-]/gi, '').slice(0, 29))} autoComplete="new-password" required /><button className="visibility-toggle" type="button" onClick={() => setShowAccessKey((visible) => !visible)} aria-label={showAccessKey ? 'Ẩn access key' : 'Hiện access key'} title={showAccessKey ? 'Ẩn access key' : 'Hiện access key'}>{showAccessKey ? '⊙' : '◉'}</button></div><small>Phần bạn đặt dài 11–29 ký tự, bắt buộc có cả chữ và số; chỉ dùng thêm . _ - khi cần.</small></label>
           </div>
           <label className="check-row" htmlFor="rules"><input id="rules" type="checkbox" checked={acceptedRules} onChange={(event) => setAcceptedRules(event.target.checked)} required /><span>Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.</span></label>
           <label className="honeypot" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={website} onChange={(event) => setWebsite(event.target.value)} /></label>
