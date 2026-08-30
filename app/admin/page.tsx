@@ -150,6 +150,8 @@ export default function AdminPage() {
   const [accessKey, setAccessKey] = useState<{ subdomain: string; value: string } | null>(null);
   const [actingOn, setActingOn] = useState<string | null>(null);
   const [expandedSubdomainId, setExpandedSubdomainId] = useState<string | null>(null);
+  const [rejectingRequestId, setRejectingRequestId] = useState<string | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
   const polling = useRef(false);
   const actingOnRef = useRef<string | null>(null);
   const stateRef = useRef<AdminState>('idle');
@@ -275,6 +277,8 @@ export default function AdminPage() {
       setDnsEvents([]);
       setAccessKey(null);
       setExpandedSubdomainId(null);
+      setRejectingRequestId(null);
+      setRejectionReason('');
       setNotice(null);
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể đăng xuất phiên admin.' });
@@ -284,9 +288,9 @@ export default function AdminPage() {
     }
   }
 
-  async function review(id: string, action: 'provision' | 'reject' | 'reset_access') {
+  async function review(id: string, action: 'provision' | 'reject' | 'reset_access', note?: string) {
     const label = action === 'provision' ? 'duyệt và tạo DNS' : action === 'reject' ? 'từ chối' : 'tạo access key mới';
-    if (!window.confirm(`Bạn muốn ${label} request này?`)) return;
+    if (action !== 'reject' && !window.confirm(`Bạn muốn ${label} request này?`)) return;
     actingOnRef.current = id;
     setActingOn(id);
     setNotice(null);
@@ -294,7 +298,7 @@ export default function AdminPage() {
       const response = await fetch('/api/admin/requests', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, action }),
+        body: JSON.stringify({ id, action, ...(action === 'reject' ? { note } : {}) }),
       });
       const payload = await response.json() as { error?: string; ownerAccessKey?: string; accessKeyProvided?: boolean; subdomain?: string };
       if (!response.ok) throw new Error(payload.error ?? 'Không thể cập nhật request.');
@@ -311,6 +315,10 @@ export default function AdminPage() {
               : 'Đã cập nhật request.',
         });
       }
+      if (action === 'reject') {
+        setRejectingRequestId(null);
+        setRejectionReason('');
+      }
       await loadDashboard({ clearNotice: false });
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể cập nhật request.' });
@@ -318,6 +326,26 @@ export default function AdminPage() {
       actingOnRef.current = null;
       setActingOn(null);
     }
+  }
+
+  function openRejectEditor(id: string) {
+    if (actingOn) return;
+    setRejectingRequestId(id);
+    setRejectionReason('');
+    setNotice(null);
+  }
+
+  function closeRejectEditor() {
+    if (actingOn) return;
+    setRejectingRequestId(null);
+    setRejectionReason('');
+  }
+
+  function submitRejection(event: FormEvent<HTMLFormElement>, id: string) {
+    event.preventDefault();
+    const reason = rejectionReason.trim();
+    if (reason.length < 3 || reason.length > 500) return;
+    void review(id, 'reject', reason);
   }
 
   function renderAdminAction(
@@ -331,7 +359,14 @@ export default function AdminPage() {
     return <button
       type="button"
       className={`admin-icon-action${danger ? ' danger' : ''}`}
-      onClick={() => review(id, action)}
+      onClick={() => {
+        if (action === 'reject') {
+          openRejectEditor(id);
+          return;
+        }
+        closeRejectEditor();
+        void review(id, action);
+      }}
       disabled={busy}
       title={busy ? 'Đang xử lý' : label}
       aria-label={busy ? 'Đang xử lý' : label}
@@ -340,7 +375,9 @@ export default function AdminPage() {
 
   function renderRequestRow(request: RequestRecord, showActions = false) {
     const updatedAt = requestUpdatedAt(request);
-    return <article className="panel admin-list-row" key={request.id}>
+    const rejectEditorOpen = rejectingRequestId === request.id;
+    const reasonLength = rejectionReason.trim().length;
+    return <article className={`panel admin-list-row${rejectEditorOpen ? ' rejecting' : ''}`} key={request.id}>
       <div className="admin-row-main">
         <h2 className="admin-row-title">{request.subdomain}<span>.takeshi.dev</span></h2>
         <div className="admin-row-meta">
@@ -349,7 +386,7 @@ export default function AdminPage() {
           <span><b>Gửi</b>{formatDate(request.createdAt)}</span>
           {updatedAt && <span><b>Cập nhật</b>{formatDate(updatedAt)}</span>}
         </div>
-        {request.reviewerNote && <p className="admin-row-note" title={request.reviewerNote}>Ghi chú: {request.reviewerNote}</p>}
+        {request.reviewerNote && <p className="admin-row-note" title={request.reviewerNote}>{request.status === 'rejected' ? 'Lý do từ chối: ' : 'Ghi chú: '}{request.reviewerNote}</p>}
       </div>
       <div className="admin-row-side">
         <StatusBadge status={request.status} label={requestStatusLabel(request.status)} />
@@ -361,6 +398,29 @@ export default function AdminPage() {
           {renderAdminAction(request.id, 'reset_access', 'Tạo access key mới', '↻')}
         </div>}
       </div>
+      {showActions && rejectEditorOpen && <form className="admin-reject-editor" onSubmit={(event) => submitRejection(event, request.id)}>
+        <label htmlFor={`reject-reason-${request.id}`}>Lý do từ chối
+          <textarea
+            id={`reject-reason-${request.id}`}
+            className="field"
+            value={rejectionReason}
+            onChange={(event) => setRejectionReason(event.target.value)}
+            placeholder="Ví dụ: CNAME chưa được cấu hình hoặc tên chưa phù hợp."
+            minLength={3}
+            maxLength={500}
+            rows={3}
+            autoFocus
+            required
+          />
+        </label>
+        <div className="admin-reject-editor-actions">
+          <small>{reasonLength}/500 ký tự · tối thiểu 3 ký tự</small>
+          <div>
+            <button className="button reject" type="submit" disabled={actingOn === request.id || reasonLength < 3}>Xác nhận từ chối</button>
+            <button className="button secondary-action" type="button" onClick={closeRejectEditor} disabled={actingOn === request.id}>Hủy</button>
+          </div>
+        </div>
+      </form>}
     </article>;
   }
 

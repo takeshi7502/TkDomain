@@ -157,8 +157,10 @@ export async function PATCH(request: NextRequest) {
     if (releasedLease.length === 0) return NextResponse.json({ error: 'Trạng thái request vừa thay đổi. Hãy tải lại dashboard.' }, { status: 409 });
   }
 
-  const note = body.note?.trim().slice(0, 500) || null;
+  const note = body.note?.trim() ?? '';
+  if (note.length > 500) return NextResponse.json({ error: 'Lý do chỉ được tối đa 500 ký tự.' }, { status: 400 });
   if (body.action === 'reject') {
+    if (note.length < 3) return NextResponse.json({ error: 'Hãy nhập lý do từ chối ít nhất 3 ký tự.' }, { status: 400 });
     const rejected = await db
       .update(subdomainRequests)
       .set({ status: 'rejected', reviewerNote: note, reviewedAt: now })
@@ -276,7 +278,7 @@ export async function PATCH(request: NextRequest) {
       });
       const activated = await tx.update(subdomainRequests).set({
         status: 'active',
-        reviewerNote: note,
+        reviewerNote: note || null,
         reviewedAt: now,
         reviewStartedAt: null,
         cloudflareRecordId,

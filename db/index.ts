@@ -1,8 +1,9 @@
-import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
+import { neon, Pool } from '@neondatabase/serverless';
+import { drizzle } from 'drizzle-orm/neon-serverless';
 import * as schema from './schema';
 
 let registrySchemaReady: Promise<void> | undefined;
+let databasePool: Pool | undefined;
 
 export function ensureRegistrySchema() {
   if (!registrySchemaReady) {
@@ -185,13 +186,22 @@ async function createRegistrySchema() {
 }
 
 export function getSql() {
+  return neon(getDatabaseUrl());
+}
+
+export function getDb() {
+  return drizzle(getDatabasePool(), { schema });
+}
+
+function getDatabaseUrl() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is unavailable. Add the Neon connection string to Vercel Environment Variables before using the registry.');
   }
-  return neon(databaseUrl);
+  return databaseUrl;
 }
 
-export function getDb() {
-  return drizzle(getSql(), { schema });
+function getDatabasePool() {
+  if (!databasePool) databasePool = new Pool({ connectionString: getDatabaseUrl() });
+  return databasePool;
 }

@@ -155,6 +155,14 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .admin-icon-action.danger { border-color: #b66c61; color: #f1bbb2; background: #38221e; }
 .admin-icon-action.danger:hover { border-color: #d9897e; color: #ffe4df; background: #573029; }
 .admin-icon-action:disabled { cursor: not-allowed; opacity: .72; }
+.admin-list-row.rejecting { border-color: #95584f; }
+.admin-reject-editor { display: block; grid-column: 1 / -1; margin-top: -1px; padding-top: 13px; border-top: 1px solid #674039; }
+.admin-reject-editor label { display: block; color: #f0c4bd; font-size: 9px; font-weight: 800; letter-spacing: .045em; }
+.admin-reject-editor textarea.field { display: block; min-height: 72px; resize: vertical; line-height: 1.5; }
+.admin-reject-editor-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.admin-reject-editor-actions small { color: #9da891; font-size: 8px; }
+.admin-reject-editor-actions > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.admin-reject-editor-actions .button { min-height: 34px; padding: 0 10px; font-size: 9px; }
 
 .admin-records-inspector { grid-column: 1 / -1; margin-top: -1px; padding-top: 15px; border-top: 1px solid #526047; }
 .admin-records-heading { display: flex; align-items: start; justify-content: space-between; gap: 14px; }
@@ -181,4 +189,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
   .admin-event-detail { grid-column: 1 / -1; max-width: 100%; }
   .admin-records-heading { align-items: center; }
   .admin-record-list { grid-template-columns: 1fr; }
+  .admin-reject-editor-actions { align-items: stretch; flex-direction: column; }
+  .admin-reject-editor-actions > div { justify-content: stretch; }
+  .admin-reject-editor-actions .button { flex: 1; }
 }
