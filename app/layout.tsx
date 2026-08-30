@@ -6,19 +6,20 @@ const display = Space_Grotesk({ variable: '--font-display', subsets: ['latin'] }
 const mono = Geist_Mono({ variable: '--font-mono', subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Takeshi Domains — Claim your .takeshi.dev',
-  description: 'A community registry for personal .takeshi.dev subdomains.',
+  title: 'Takeshi Domains',
+  description: 'Đăng ký và quản lý subdomain .takeshi.dev.',
   metadataBase: new URL('https://domain.takeshi.dev'),
   openGraph: {
-    title: 'Takeshi Domains — Claim your .takeshi.dev',
-    description: 'A community registry for personal .takeshi.dev subdomains.',
-    images: ['/og.png'],
+    type: 'website',
+    url: 'https://domain.takeshi.dev',
+    siteName: 'Takeshi Domains',
+    title: 'Takeshi Domains',
+    description: 'Đăng ký và quản lý subdomain .takeshi.dev.',
   },
   twitter: {
-    card: 'summary_large_image',
-    title: 'Takeshi Domains — Claim your .takeshi.dev',
-    description: 'A community registry for personal .takeshi.dev subdomains.',
-    images: ['/og.png'],
+    card: 'summary',
+    title: 'Takeshi Domains',
+    description: 'Đăng ký và quản lý subdomain .takeshi.dev.',
   },
 };
 

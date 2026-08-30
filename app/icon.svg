@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Takeshi Domains</title>
+  <rect width="64" height="64" fill="#10130f"/>
+  <rect x="4" y="4" width="56" height="56" fill="#171c15"/>
+  <rect x="4" y="4" width="56" height="4" fill="#3f4c36"/>
+  <rect x="4" y="4" width="4" height="56" fill="#3f4c36"/>
+  <rect x="24" y="10" width="16" height="12" fill="#d7ee91"/>
+  <rect x="12" y="22" width="16" height="12" fill="#88a34b"/>
+  <rect x="28" y="22" width="16" height="12" fill="#b7d967"/>
+  <rect x="44" y="22" width="8" height="12" fill="#708a38"/>
+  <rect x="24" y="34" width="16" height="16" fill="#88a34b"/>
+  <rect x="28" y="38" width="12" height="12" fill="#b7d967"/>
+</svg>
