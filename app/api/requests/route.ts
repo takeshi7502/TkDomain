@@ -1,4 +1,4 @@
-import { and, count, eq, gt, inArray } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
@@ -9,6 +9,17 @@ import { isValidSubdomain, normalizeSubdomain, validateClaim } from '@/lib/regis
 import { notifyAdminOfNewRequest } from '@/lib/telegram';
 
 const RESERVED_STATUSES = ['pending', 'active'] as const;
+const REQUEST_IP_LIMIT = 10;
+const REQUEST_IP_WINDOW_MS = 60 * 60_000;
+const TELEGRAM_REQUEST_LIMIT = 3;
+const TELEGRAM_REQUEST_WINDOW_MS = 24 * 60 * 60_000;
+
+function retryAfterResponse(error: string, retryAfterSeconds: number, field?: string) {
+  return NextResponse.json(
+    { error, retryAfterSeconds, ...(field ? { field } : {}) },
+    { status: 429, headers: { 'Retry-After': String(retryAfterSeconds) } },
+  );
+}
 
 export async function GET(request: NextRequest) {
   const subdomain = normalizeSubdomain(request.nextUrl.searchParams.get('subdomain') ?? '');
@@ -26,24 +37,38 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const limit = await enforceRegistryRateLimit(request, 'request-submit', 6, 86_400_000);
-  if (!limit.allowed) return NextResponse.json({ error: 'Too many requests from this network today. Please try again tomorrow.' }, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } });
   let body: unknown;
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
 
-  const result = validateClaim(body as Parameters<typeof validateClaim>[0]);
+  const claimInput = body !== null && typeof body === 'object'
+    ? body as Parameters<typeof validateClaim>[0]
+    : {};
+  const result = validateClaim(claimInput);
   if ('error' in result) return NextResponse.json(result, { status: 400 });
 
   await ensureRegistrySchema();
   const db = getDb();
   const now = Date.now();
   const accessKeyHash = hashOwnerAccessKey(result.value.accessKey);
-  const [{ value: requestCount }] = await db
-    .select({ value: count() })
+  const recentTelegramRequests = await db
+    .select({ createdAt: subdomainRequests.createdAt })
     .from(subdomainRequests)
-    .where(and(eq(subdomainRequests.telegramUsername, result.value.telegramUsername), gt(subdomainRequests.createdAt, now - 86_400_000)));
+    .where(and(
+      eq(subdomainRequests.telegramUsername, result.value.telegramUsername),
+      gt(subdomainRequests.createdAt, now - TELEGRAM_REQUEST_WINDOW_MS),
+    ))
+    .orderBy(asc(subdomainRequests.createdAt))
+    .limit(TELEGRAM_REQUEST_LIMIT);
 
-  if (requestCount >= 3) return NextResponse.json({ error: 'Telegram này đã gửi quá nhiều request hôm nay. Hãy thử lại sau.', field: 'telegramUsername' }, { status: 429 });
+  if (recentTelegramRequests.length >= TELEGRAM_REQUEST_LIMIT) {
+    const oldestRequestAt = Number(recentTelegramRequests[0]?.createdAt ?? now);
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldestRequestAt + TELEGRAM_REQUEST_WINDOW_MS - now) / 1_000));
+    return retryAfterResponse(
+      'Telegram này đã gửi tối đa 3 yêu cầu trong 24 giờ gần nhất. Hãy thử lại sau khi thời gian chờ kết thúc.',
+      retryAfterSeconds,
+      'telegramUsername',
+    );
+  }
 
   const existing = await db.query.subdomainRequests.findFirst({
     where: and(eq(subdomainRequests.subdomain, result.value.subdomain), inArray(subdomainRequests.status, RESERVED_STATUSES)),
@@ -58,6 +83,23 @@ export async function POST(request: NextRequest) {
     columns: { id: true },
   });
   if (pendingKey) return NextResponse.json({ error: 'Access key này đang được dùng cho một request khác. Hãy chọn key khác.', field: 'accessKey' }, { status: 409 });
+
+  // Only a request that has passed validation and all conflict checks consumes
+  // an IP quota. This keeps typos, already-taken names, and test retries from
+  // locking a user out. The v2 key deliberately starts a fresh bucket instead
+  // of inheriting the previous 6-per-day counter stored in production.
+  const ipLimit = await enforceRegistryRateLimit(
+    request,
+    'request-submit-valid-v2',
+    REQUEST_IP_LIMIT,
+    REQUEST_IP_WINDOW_MS,
+  );
+  if (!ipLimit.allowed) {
+    return retryAfterResponse(
+      'Bạn đã gửi quá nhiều yêu cầu hợp lệ từ mạng này. Hãy chờ một lúc rồi thử lại.',
+      ipLimit.retryAfterSeconds,
+    );
+  }
 
   const id = crypto.randomUUID();
   try {

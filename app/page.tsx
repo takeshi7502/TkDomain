@@ -22,6 +22,20 @@ const emptyTouched: Record<FieldName, boolean> = {
   rules: false,
 };
 
+function formatRetryAfter(retryAfterSeconds?: number) {
+  if (typeof retryAfterSeconds !== 'number' || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds < 1) return '';
+
+  const totalSeconds = Math.ceil(retryAfterSeconds);
+  if (totalSeconds < 60) return `${totalSeconds} giây`;
+
+  const totalMinutes = Math.ceil(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes} phút`;
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${hours} giờ ${minutes} phút` : `${hours} giờ`;
+}
+
 export default function Home() {
   const [subdomain, setSubdomain] = useState('');
   const [cnameTarget, setCnameTarget] = useState('');
@@ -184,13 +198,20 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subdomain, cnameTarget, telegramUsername, accessKey, acceptedRules, website }),
       });
-      const payload = await response.json() as { error?: string; field?: FieldName; requestId?: string };
+      const payload = await response.json() as { error?: string; field?: FieldName; requestId?: string; retryAfterSeconds?: number };
       if (!response.ok || !payload.requestId) {
         if (payload.field) {
           setServerErrors((current) => ({ ...current, [payload.field as FieldName]: payload.error ?? 'Giá trị không hợp lệ.' }));
           markTouched(payload.field);
         }
-        setSubmission({ type: 'error', message: payload.error ?? 'Không thể gửi yêu cầu. Hãy thử lại.' });
+        const headerRetryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
+        const retryAfter = formatRetryAfter(
+          typeof payload.retryAfterSeconds === 'number'
+            ? payload.retryAfterSeconds
+            : Number.isFinite(headerRetryAfter) ? headerRetryAfter : undefined,
+        );
+        const errorMessage = payload.error ?? 'Không thể gửi yêu cầu. Hãy thử lại.';
+        setSubmission({ type: 'error', message: retryAfter ? `${errorMessage} Thời gian chờ còn lại: khoảng ${retryAfter}.` : errorMessage });
         return;
       }
       setSubmission({ type: 'success', requestId: payload.requestId });
