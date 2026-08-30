@@ -59,6 +59,7 @@ export const dnsRecords = pgTable(
     ttl: integer('ttl').notNull().default(1),
     proxied: boolean('proxied').notNull().default(false),
     priority: integer('priority'),
+    isPrimary: boolean('is_primary').notNull().default(false),
     cloudflareRecordId: text('cloudflare_record_id').notNull().unique(),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
@@ -67,6 +68,16 @@ export const dnsRecords = pgTable(
     index('idx_dns_records_subdomain_name').on(table.subdomainId, table.recordName),
     uniqueIndex('dns_records_identity_unique').on(table.subdomainId, table.recordType, table.recordName, table.content),
   ],
+);
+
+export const registryRateLimits = pgTable(
+  'registry_rate_limits',
+  {
+    key: text('key').primaryKey(),
+    windowStart: bigint('window_start', { mode: 'number' }).notNull(),
+    hits: integer('hits').notNull(),
+  },
+  (table) => [index('idx_registry_rate_limits_window_start').on(table.windowStart)],
 );
 
 export const ownerSessions = pgTable(

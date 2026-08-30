@@ -2,13 +2,16 @@ import { and, count, eq, gt } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 import { ensureRegistrySchema, getDb } from '@/db';
 import { subdomainRequests } from '@/db/schema';
-import { normalizeSubdomain, validateClaim } from '@/lib/registry';
+import { enforceRegistryRateLimit } from '@/lib/rate-limit';
+import { isValidSubdomain, normalizeSubdomain, validateClaim } from '@/lib/registry';
 
 export async function GET(request: NextRequest) {
   const subdomain = normalizeSubdomain(request.nextUrl.searchParams.get('subdomain') ?? '');
   if (!subdomain) return NextResponse.json({ error: 'Missing subdomain.' }, { status: 400 });
+  if (!isValidSubdomain(subdomain)) return NextResponse.json({ error: 'Invalid subdomain.' }, { status: 400 });
 
-  await ensureRegistrySchema();
+  const limit = await enforceRegistryRateLimit(request, 'availability-check', 15, 60_000);
+  if (!limit.allowed) return NextResponse.json({ error: 'Too many name checks. Please try again shortly.' }, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } });
   const db = getDb();
   const existing = await db.query.subdomainRequests.findFirst({
     where: eq(subdomainRequests.subdomain, subdomain),
@@ -18,6 +21,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const limit = await enforceRegistryRateLimit(request, 'request-submit', 6, 86_400_000);
+  if (!limit.allowed) return NextResponse.json({ error: 'Too many requests from this network today. Please try again tomorrow.' }, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } });
   let body: unknown;
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
 

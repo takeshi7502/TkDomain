@@ -60,12 +60,20 @@ async function createRegistrySchema() {
     ttl INTEGER NOT NULL DEFAULT 1,
     proxied BOOLEAN NOT NULL DEFAULT FALSE,
     priority INTEGER,
+    is_primary BOOLEAN NOT NULL DEFAULT FALSE,
     cloudflare_record_id TEXT NOT NULL UNIQUE,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
     UNIQUE (subdomain_id, record_type, record_name, content)
   )`);
+  await sql.query('ALTER TABLE dns_records ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_dns_records_subdomain_name ON dns_records (subdomain_id, record_name)');
+  await sql.query(`CREATE TABLE IF NOT EXISTS registry_rate_limits (
+    key TEXT PRIMARY KEY NOT NULL,
+    window_start BIGINT NOT NULL,
+    hits INTEGER NOT NULL
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_registry_rate_limits_window_start ON registry_rate_limits (window_start)');
   await sql.query(`CREATE TABLE IF NOT EXISTS owner_sessions (
     id TEXT PRIMARY KEY NOT NULL,
     owner_id TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
@@ -103,9 +111,17 @@ async function createRegistrySchema() {
     JOIN subdomains s ON s.label = r.subdomain
     WHERE r.status = 'active' AND r.cloudflare_record_id IS NOT NULL
     ON CONFLICT (cloudflare_record_id) DO NOTHING`);
+  await sql.query(`UPDATE dns_records d
+    SET is_primary = TRUE
+    FROM subdomains s
+    JOIN subdomain_requests r ON r.id = s.request_id
+    WHERE d.subdomain_id = s.id
+      AND d.record_name = '@'
+      AND d.cloudflare_record_id = r.cloudflare_record_id
+      AND d.is_primary = FALSE`);
 }
 
-function getSql() {
+export function getSql() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is unavailable. Add the Neon connection string to Vercel Environment Variables before using the registry.');

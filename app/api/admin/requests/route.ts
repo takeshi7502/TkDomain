@@ -84,7 +84,7 @@ export async function PATCH(request: NextRequest) {
   const dnsRecordId = crypto.randomUUID();
   await db.insert(dnsRecords).values({
     id: dnsRecordId, subdomainId, recordType: 'CNAME', recordName: '@', content: requestRecord.cnameTarget,
-    ttl: 1, proxied: false, priority: null, cloudflareRecordId, createdAt: now, updatedAt: now,
+    ttl: 1, proxied: false, priority: null, isPrimary: true, cloudflareRecordId, createdAt: now, updatedAt: now,
   });
   await db.insert(dnsEvents).values({
     id: crypto.randomUUID(), subdomainId, recordId: dnsRecordId, actorType: 'admin', action: 'record_created',

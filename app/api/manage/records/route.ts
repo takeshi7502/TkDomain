@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
   }
   const now = Date.now();
   const id = crypto.randomUUID();
-  await getDb().insert(dnsRecords).values({ id, subdomainId: domain.id, ...validated.value, cloudflareRecordId, createdAt: now, updatedAt: now });
+  await getDb().insert(dnsRecords).values({ id, subdomainId: domain.id, ...validated.value, isPrimary: false, cloudflareRecordId, createdAt: now, updatedAt: now });
   await getDb().insert(dnsEvents).values({ id: crypto.randomUUID(), subdomainId: domain.id, recordId: id, actorType: 'owner', action: 'record_created', details: { type: validated.value.recordType, name: validated.value.recordName }, createdAt: now });
   return NextResponse.json({ ok: true, record: { id, cloudflareRecordId, ...validated.value, createdAt: now, updatedAt: now } }, { status: 201 });
 }
@@ -88,6 +88,7 @@ export async function DELETE(request: NextRequest) {
   const rows = await getDb().select({ record: dnsRecords, domain: subdomains }).from(dnsRecords).innerJoin(subdomains, eq(dnsRecords.subdomainId, subdomains.id)).where(and(eq(dnsRecords.id, id), eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active'))).limit(1);
   const current = rows[0];
   if (!current) return NextResponse.json({ error: 'DNS record không tồn tại hoặc không thuộc quyền quản lý của bạn.' }, { status: 404 });
+  if (current.record.isPrimary) return NextResponse.json({ error: 'Primary record cannot be deleted here. Use the remove-subdomain action instead.' }, { status: 409 });
   try {
     await deleteCloudflareRecord(current.record.cloudflareRecordId);
   } catch (error) {

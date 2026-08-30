@@ -33,6 +33,7 @@ async function callCloudflare(path: string, method: 'POST' | 'PUT' | 'DELETE', b
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const payload = await response.json().catch(() => ({})) as CloudflareResult;
+  if (method === 'DELETE' && response.status === 404) return payload;
   if (!response.ok || !payload.success || (method !== 'DELETE' && !payload.result?.id)) {
     throw new Error(payload.errors?.[0]?.message ?? 'Cloudflare DNS rejected this record.');
   }

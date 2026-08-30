@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureRegistrySchema, getDb } from '@/db';
 import { owners, subdomains } from '@/db/schema';
 import { clearOwnerSessionCookie, createOwnerSession, getOwnerSession, hashOwnerAccessKey, removeOwnerSession, setOwnerSessionCookie } from '@/lib/owner-auth';
+import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 
 function ownerProfile(owner: typeof owners.$inferSelect) {
   return { email: owner.email, githubHandle: owner.githubHandle };
@@ -17,6 +18,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const limit = await enforceRegistryRateLimit(request, 'owner-login', 8, 15 * 60_000);
+  if (!limit.allowed) return NextResponse.json({ error: 'Too many access-key attempts. Please try again later.' }, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } });
   let body: { accessKey?: string };
   try { body = await request.json() as { accessKey?: string }; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
   const accessKey = body.accessKey?.trim();
