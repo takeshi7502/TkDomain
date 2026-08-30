@@ -155,6 +155,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .admin-icon-action.danger { border-color: #b66c61; color: #f1bbb2; background: #38221e; }
 .admin-icon-action.danger:hover { border-color: #d9897e; color: #ffe4df; background: #573029; }
 .admin-icon-action:disabled { cursor: not-allowed; opacity: .72; }
+.admin-session-actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
 .admin-list-row.rejecting { border-color: #95584f; }
 .admin-reject-editor { display: block; grid-column: 1 / -1; margin-top: -1px; padding-top: 13px; border-top: 1px solid #674039; }
 .admin-reject-editor label { display: block; color: #f0c4bd; font-size: 9px; font-weight: 800; letter-spacing: .045em; }

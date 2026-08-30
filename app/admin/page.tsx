@@ -152,6 +152,7 @@ export default function AdminPage() {
   const [expandedSubdomainId, setExpandedSubdomainId] = useState<string | null>(null);
   const [rejectingRequestId, setRejectingRequestId] = useState<string | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [testingTelegram, setTestingTelegram] = useState(false);
   const polling = useRef(false);
   const actingOnRef = useRef<string | null>(null);
   const stateRef = useRef<AdminState>('idle');
@@ -285,6 +286,22 @@ export default function AdminPage() {
     } finally {
       stateRef.current = 'idle';
       setState('idle');
+    }
+  }
+
+  async function testTelegram() {
+    if (testingTelegram) return;
+    setTestingTelegram(true);
+    setNotice(null);
+    try {
+      const response = await fetch('/api/admin/telegram', { method: 'POST' });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? 'Không thể gửi tin nhắn test Telegram.');
+      setNotice({ tone: 'success', text: 'Đã gửi tin nhắn test vào Telegram của admin.' });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể gửi tin nhắn test Telegram.' });
+    } finally {
+      setTestingTelegram(false);
     }
   }
 
@@ -511,7 +528,7 @@ export default function AdminPage() {
     <main className="admin-page">
       <div className="admin-shell">
         <Link href="/" className="back-link">← Về trang đăng ký</Link>
-        <div className="admin-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER AREA</p><h1>Requests</h1></div><div><p>{authenticated ? 'Phiên admin được giữ bằng cookie HTTP-only trên thiết bị này. Admin key không được lưu trong trình duyệt.' : 'Nhập admin key để tạo phiên an toàn trên thiết bị này. Key không được lưu trong trình duyệt.'}</p>{authenticated && <button type="button" className="text-button" onClick={() => void logout()} disabled={state === 'loading'}>Đăng xuất admin</button>}</div></div>
+        <div className="admin-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER AREA</p><h1>Requests</h1></div><div><p>{authenticated ? 'Phiên admin được giữ bằng cookie HTTP-only trên thiết bị này. Admin key không được lưu trong trình duyệt.' : 'Nhập admin key để tạo phiên an toàn trên thiết bị này. Key không được lưu trong trình duyệt.'}</p>{authenticated && <div className="admin-session-actions"><button type="button" className="text-button" onClick={() => void testTelegram()} disabled={testingTelegram}>{testingTelegram ? 'Đang gửi test...' : 'Test bot Telegram'}</button><button type="button" className="text-button" onClick={() => void logout()} disabled={state === 'loading'}>Đăng xuất admin</button></div>}</div></div>
         {!authenticated && sessionChecked && <form className="panel admin-key-form" onSubmit={startSession}>
           <label htmlFor="admin-key">Registry admin key<input id="admin-key" className="field" type="password" value={key} onChange={(event) => { setKey(event.target.value); setDashboardLoaded(false); }} autoComplete="off" required /></label>
           <button type="submit" className="button" disabled={state === 'loading'}>{state === 'loading' ? 'Đang mở...' : 'Mở dashboard'}</button>
