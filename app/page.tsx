@@ -33,6 +33,7 @@ export default function Home() {
   const [availability, setAvailability] = useState<AvailabilityState>('idle');
   const [availabilityMessage, setAvailabilityMessage] = useState('');
   const [touched, setTouched] = useState(emptyTouched);
+  const [requiredOnSubmit, setRequiredOnSubmit] = useState(emptyTouched);
   const [serverErrors, setServerErrors] = useState<Partial<Record<FieldName, string>>>({});
 
   const accessKey = `tk-${accessKeySuffix}`;
@@ -40,28 +41,49 @@ export default function Home() {
     return serverErrors[field] ? { kind: 'invalid', message: serverErrors[field] } : state;
   }
 
+  function requiredFieldState(field: FieldName, hasValue: boolean, valid: boolean, validMessage: string, invalidMessage: string): FieldState {
+    if (!hasValue && !requiredOnSubmit[field]) return { kind: 'idle', message: '' };
+    return valid ? { kind: 'valid', message: validMessage } : { kind: 'invalid', message: invalidMessage };
+  }
+
   const fieldState: Record<FieldName, FieldState> = {
-    subdomain: withServerError('subdomain', !isValidSubdomain(subdomain)
-      ? { kind: 'invalid', message: 'Tên phải dài 3–63 ký tự, chỉ gồm a–z, 0–9 và dấu gạch ngang.' }
-      : availability === 'available'
-        ? { kind: 'valid', message: availabilityMessage || '✓ Tên có thể dùng.' }
-        : availability === 'taken' || availability === 'error'
-          ? { kind: 'invalid', message: availabilityMessage || 'Không thể dùng tên này.' }
-          : { kind: 'idle', message: availability === 'checking' ? 'Đang kiểm tra tên...' : 'Rời ô để kiểm tra tên.' }),
-    cnameTarget: withServerError('cnameTarget', !cnameTarget.trim()
-      ? { kind: 'invalid', message: 'Nhập CNAME đích.' }
-      : isValidCnameTarget(cnameTarget.trim().toLowerCase().replace(/\.+$/, ''))
-        ? { kind: 'valid', message: '✓ CNAME hợp lệ.' }
-        : { kind: 'invalid', message: 'CNAME cần là hostname hợp lệ, ví dụ your-project.pages.dev.' }),
-    telegramUsername: withServerError('telegramUsername', isValidTelegramUsername(telegramUsername)
-      ? { kind: 'valid', message: '✓ Telegram username hợp lệ.' }
-      : { kind: 'invalid', message: 'Username Telegram dài 5–32 ký tự, bắt đầu bằng chữ và chỉ dùng chữ, số, _.' }),
-    accessKey: withServerError('accessKey', isValidOwnerAccessKey(accessKey)
-      ? { kind: 'valid', message: '✓ Access key đúng định dạng.' }
-      : { kind: 'invalid', message: 'Phần sau tk- phải dài 11–29 ký tự, có cả chữ và số; chỉ dùng thêm . _ - khi cần.' }),
-    rules: withServerError('rules', acceptedRules
-      ? { kind: 'valid', message: '✓ Đã đồng ý quy định.' }
-      : { kind: 'invalid', message: 'Bạn cần đồng ý với quy định để gửi yêu cầu.' }),
+    subdomain: withServerError('subdomain', !subdomain.trim() && !requiredOnSubmit.subdomain
+      ? { kind: 'idle', message: '' }
+      : !isValidSubdomain(subdomain)
+        ? { kind: 'invalid', message: 'Tên phải dài 3–63 ký tự, chỉ gồm a–z, 0–9 và dấu gạch ngang.' }
+        : availability === 'available'
+          ? { kind: 'valid', message: availabilityMessage || '✓ Tên có thể dùng.' }
+          : availability === 'taken' || availability === 'error'
+            ? { kind: 'invalid', message: availabilityMessage || 'Không thể dùng tên này.' }
+            : { kind: 'idle', message: availability === 'checking' ? 'Đang kiểm tra tên...' : 'Rời ô để kiểm tra tên.' }),
+    cnameTarget: withServerError('cnameTarget', requiredFieldState(
+      'cnameTarget',
+      Boolean(cnameTarget.trim()),
+      isValidCnameTarget(cnameTarget.trim().toLowerCase().replace(/\.+$/, '')),
+      '✓ CNAME hợp lệ.',
+      !cnameTarget.trim() ? 'Nhập CNAME đích.' : 'CNAME cần là hostname hợp lệ, ví dụ your-project.pages.dev.',
+    )),
+    telegramUsername: withServerError('telegramUsername', requiredFieldState(
+      'telegramUsername',
+      Boolean(telegramUsername.trim()),
+      isValidTelegramUsername(telegramUsername),
+      '✓ Telegram username hợp lệ.',
+      !telegramUsername.trim() ? 'Nhập Telegram username.' : 'Username Telegram dài 5–32 ký tự, bắt đầu bằng chữ và chỉ dùng chữ, số, _.',
+    )),
+    accessKey: withServerError('accessKey', requiredFieldState(
+      'accessKey',
+      Boolean(accessKeySuffix.trim()),
+      isValidOwnerAccessKey(accessKey),
+      '✓ Access key đúng định dạng.',
+      !accessKeySuffix.trim() ? 'Nhập phần access key sau tk-.' : 'Phần sau tk- phải dài 11–29 ký tự, có cả chữ và số; chỉ dùng thêm . _ - khi cần.',
+    )),
+    rules: withServerError('rules', requiredFieldState(
+      'rules',
+      acceptedRules,
+      acceptedRules,
+      '✓ Đã đồng ý quy định.',
+      'Bạn cần đồng ý với quy định để gửi yêu cầu.',
+    )),
   };
 
   function markTouched(field: FieldName) {
@@ -70,6 +92,7 @@ export default function Home() {
 
   function resetFieldFeedback(field: FieldName) {
     setTouched((current) => ({ ...current, [field]: false }));
+    setRequiredOnSubmit((current) => ({ ...current, [field]: false }));
     setServerErrors((current) => {
       const next = { ...current };
       delete next[field];
@@ -87,6 +110,11 @@ export default function Home() {
 
   async function checkAvailability(): Promise<AvailabilityState> {
     markTouched('subdomain');
+    if (!subdomain.trim()) {
+      setAvailability('idle');
+      setAvailabilityMessage('');
+      return 'idle';
+    }
     if (!isValidSubdomain(subdomain)) {
       setAvailability('error');
       setAvailabilityMessage('Tên subdomain không hợp lệ hoặc đang được reserved.');
@@ -132,8 +160,12 @@ export default function Home() {
   async function submitClaim(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setTouched({ subdomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
-    const localFields: FieldName[] = ['cnameTarget', 'telegramUsername', 'accessKey', 'rules'];
-    if (localFields.some((field) => fieldState[field].kind !== 'valid')) {
+    setRequiredOnSubmit({ subdomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
+    const localFieldsAreValid = isValidCnameTarget(cnameTarget.trim().toLowerCase().replace(/\.+$/, ''))
+      && isValidTelegramUsername(telegramUsername)
+      && isValidOwnerAccessKey(accessKey)
+      && acceptedRules;
+    if (!localFieldsAreValid) {
       setSubmission({ type: 'error', message: 'Hãy sửa các trường được đánh dấu đỏ trước khi gửi.' });
       return;
     }
@@ -215,8 +247,8 @@ export default function Home() {
               {displayHint('accessKey', 'Phần bạn đặt dài 11–29 ký tự, bắt buộc có cả chữ và số; chỉ dùng thêm . _ - khi cần.')}
             </label>
           </div>
-          <label className="check-row" htmlFor="rules"><input id="rules" className={touched.rules ? (acceptedRules ? 'valid' : 'invalid') : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.</span></label>
-          {touched.rules && <small className={acceptedRules ? 'field-good rules-feedback' : 'field-bad rules-feedback'}>{fieldState.rules.message}</small>}
+          <label className="check-row" htmlFor="rules"><input id="rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.</span></label>
+          {touched.rules && fieldState.rules.kind !== 'idle' && <small className={fieldState.rules.kind === 'valid' ? 'field-good rules-feedback' : 'field-bad rules-feedback'}>{fieldState.rules.message}</small>}
           <label className="honeypot" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={website} onChange={(event) => setWebsite(event.target.value)} /></label>
           {submission.type === 'error' && <p className="form-message error" role="alert">{submission.message}</p>}
           {submission.type === 'success' && <p className="form-message success" role="status">Đã nhận yêu cầu cho <strong>{subdomain}.takeshi.dev</strong>. Mã request: {submission.requestId.slice(0, 8)}.</p>}

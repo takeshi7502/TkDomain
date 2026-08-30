@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureRegistrySchema, getDb } from '@/db';
 import { dnsEvents, dnsRecords, owners, ownerSessions, subdomains, subdomainRequests } from '@/db/schema';
 import { createCloudflareRecord, deleteCloudflareRecord, findCloudflareRecordByComment } from '@/lib/cloudflare';
+import { isAdminAuthorized } from '@/lib/admin-auth';
 import { fullRecordName, type ValidatedDnsRecord } from '@/lib/dns';
 import { createOwnerAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
 import { BASE_DOMAIN } from '@/lib/registry';
@@ -11,8 +12,7 @@ import { BASE_DOMAIN } from '@/lib/registry';
 const REVIEW_LEASE_MS = 10 * 60_000;
 
 function authorized(request: NextRequest) {
-  const key = request.headers.get('x-registry-admin-key');
-  return Boolean(process.env.REGISTRY_ADMIN_KEY && key && key === process.env.REGISTRY_ADMIN_KEY);
+  return isAdminAuthorized(request);
 }
 
 export async function GET(request: NextRequest) {

@@ -1,13 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <title>Takeshi Domains</title>
-  <rect width="64" height="64" fill="#10130f"/>
-  <rect x="4" y="4" width="56" height="56" fill="#171c15"/>
-  <rect x="4" y="4" width="56" height="4" fill="#3f4c36"/>
-  <rect x="4" y="4" width="4" height="56" fill="#3f4c36"/>
-  <rect x="24" y="10" width="16" height="12" fill="#d7ee91"/>
-  <rect x="12" y="22" width="16" height="12" fill="#88a34b"/>
-  <rect x="28" y="22" width="16" height="12" fill="#b7d967"/>
-  <rect x="44" y="22" width="8" height="12" fill="#708a38"/>
-  <rect x="24" y="34" width="16" height="16" fill="#88a34b"/>
-  <rect x="28" y="38" width="12" height="12" fill="#b7d967"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges">
+  <title>TK</title>
+  <rect width="32" height="32" fill="#0d120d"/>
+  <rect x="2" y="2" width="28" height="28" fill="#161d14"/>
+  <rect x="2" y="2" width="28" height="2" fill="#46543a"/>
+  <rect x="2" y="2" width="2" height="28" fill="#46543a"/>
+  <rect x="4" y="4" width="24" height="1" fill="#293323"/>
+
+  <!-- T -->
+  <g fill="#edf5cf">
+    <rect x="5" y="8" width="10" height="3"/>
+    <rect x="8" y="11" width="4" height="13"/>
+  </g>
+
+  <!-- K -->
+  <g fill="#b9df68">
+    <rect x="18" y="8" width="3" height="16"/>
+    <rect x="24" y="8" width="3" height="3"/>
+    <rect x="22" y="11" width="3" height="3"/>
+    <rect x="21" y="14" width="3" height="3"/>
+    <rect x="22" y="17" width="3" height="3"/>
+    <rect x="24" y="20" width="3" height="4"/>
+  </g>
 </svg>
