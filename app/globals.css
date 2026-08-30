@@ -89,3 +89,13 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .key-input .field { min-width: 0; flex: 1; }
 .lost-key-link { display: block; margin: -7px 0 16px; color: var(--lime); font-size: 9px; text-decoration: underline; text-underline-offset: 3px; }
 .lost-key-link:hover { color: #d7ee91; }
+
+/* Validation always uses green for a confirmed pass, red for an error, and neutral for in-progress information. */
+.field.valid, .field-combo.valid { border-color: #769741; background: #172113; }
+.field.invalid, .field-combo.invalid { border-color: #b8675d; background: #201411; }
+.field.valid:focus, .field-combo.valid:focus-within { border-color: #b7d967; box-shadow: 0 0 0 1px #769741; }
+.field.invalid:focus, .field-combo.invalid:focus-within { border-color: #e59a8e; box-shadow: 0 0 0 1px #9d554d; }
+.check-row input.valid { border-color: #769741; }
+.check-row input.invalid { border-color: #b8675d; box-shadow: 0 0 0 1px #6e3731; }
+.rules-feedback, .access-key-feedback { display: block; margin: -11px 0 16px; font-size: 9px; line-height: 1.45; }
+.form-message.info { border-color: #69735e; color: #d5ddc7; background: #1d241a; }

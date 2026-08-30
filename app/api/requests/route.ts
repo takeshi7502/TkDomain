@@ -39,21 +39,21 @@ export async function POST(request: NextRequest) {
     .from(subdomainRequests)
     .where(and(eq(subdomainRequests.telegramUsername, result.value.telegramUsername), gt(subdomainRequests.createdAt, now - 86_400_000)));
 
-  if (requestCount >= 3) return NextResponse.json({ error: 'Telegram này đã gửi quá nhiều request hôm nay. Hãy thử lại sau.' }, { status: 429 });
+  if (requestCount >= 3) return NextResponse.json({ error: 'Telegram này đã gửi quá nhiều request hôm nay. Hãy thử lại sau.', field: 'telegramUsername' }, { status: 429 });
 
   const existing = await db.query.subdomainRequests.findFirst({
     where: eq(subdomainRequests.subdomain, result.value.subdomain),
     columns: { id: true, status: true },
   });
-  if (existing && existing.status !== 'rejected') return NextResponse.json({ error: 'Subdomain này đã có người đăng ký hoặc đang chờ duyệt.' }, { status: 409 });
+  if (existing && existing.status !== 'rejected') return NextResponse.json({ error: 'Subdomain này đã có người đăng ký hoặc đang chờ duyệt.', field: 'subdomain' }, { status: 409 });
 
   const keyInUse = await db.query.owners.findFirst({ where: eq(owners.accessKeyHash, accessKeyHash), columns: { id: true } });
-  if (keyInUse) return NextResponse.json({ error: 'Access key này đã được dùng. Hãy chọn key khác.' }, { status: 409 });
+  if (keyInUse) return NextResponse.json({ error: 'Access key này đã được dùng. Hãy chọn key khác.', field: 'accessKey' }, { status: 409 });
   const pendingKey = await db.query.subdomainRequests.findFirst({
     where: and(eq(subdomainRequests.requestedAccessKeyHash, accessKeyHash), ne(subdomainRequests.status, 'rejected')),
     columns: { id: true },
   });
-  if (pendingKey && pendingKey.id !== existing?.id) return NextResponse.json({ error: 'Access key này đang được dùng cho một request khác. Hãy chọn key khác.' }, { status: 409 });
+  if (pendingKey && pendingKey.id !== existing?.id) return NextResponse.json({ error: 'Access key này đang được dùng cho một request khác. Hãy chọn key khác.', field: 'accessKey' }, { status: 409 });
 
   const id = crypto.randomUUID();
   if (existing?.status === 'rejected') {
