@@ -1,8 +1,9 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { FocusEvent, FormEvent, useEffect, useState } from 'react';
 
 import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
+import { UserLanguageToggle, useUserLanguage } from '@/app/components/UserLanguageToggle';
 import { isValidCnameTarget, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername } from '@/lib/registry';
 
 type SubmissionState =
@@ -17,6 +18,59 @@ type RegistryDomain = { id: string; hostname: string };
 
 const defaultRegistryDomain: RegistryDomain = { id: 'managed-domain-takeshi-dev', hostname: 'takeshi.dev' };
 
+function DomainSuffixPicker({
+  domains,
+  value,
+  onChange,
+  onBlur,
+  emptyLabel,
+  chooseLabel,
+}: {
+  domains: RegistryDomain[];
+  value: string;
+  onChange: (value: string) => void;
+  onBlur: () => void;
+  emptyLabel: string;
+  chooseLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = domains.find((domain) => domain.id === value);
+
+  function closeIfLeaving(event: FocusEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setOpen(false);
+      onBlur();
+    }
+  }
+
+  return (
+    <div className={`domain-suffix-picker${open ? ' open' : ''}`} onBlur={closeIfLeaving}>
+      <button
+        className="domain-suffix-trigger"
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        disabled={domains.length === 0}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={chooseLabel}
+      >
+        <span>{selected ? `.${selected.hostname}` : emptyLabel}</span><i aria-hidden="true">⌄</i>
+      </button>
+      {open && <div className="domain-suffix-menu" role="listbox" aria-label={chooseLabel}>
+        {domains.map((domain) => <button
+          key={domain.id}
+          className={domain.id === value ? 'selected' : ''}
+          type="button"
+          role="option"
+          aria-selected={domain.id === value}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => { onChange(domain.id); setOpen(false); onBlur(); }}
+        >.{domain.hostname}</button>)}
+      </div>}
+    </div>
+  );
+}
+
 const emptyTouched: Record<FieldName, boolean> = {
   subdomain: false,
   parentDomain: false,
@@ -26,21 +80,23 @@ const emptyTouched: Record<FieldName, boolean> = {
   rules: false,
 };
 
-function formatRetryAfter(retryAfterSeconds?: number) {
+function formatRetryAfter(retryAfterSeconds: number | undefined, language: 'vi' | 'en') {
   if (typeof retryAfterSeconds !== 'number' || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds < 1) return '';
 
   const totalSeconds = Math.ceil(retryAfterSeconds);
-  if (totalSeconds < 60) return `${totalSeconds} giây`;
+  if (totalSeconds < 60) return language === 'en' ? `${totalSeconds} seconds` : `${totalSeconds} giây`;
 
   const totalMinutes = Math.ceil(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes} phút`;
+  if (totalMinutes < 60) return language === 'en' ? `${totalMinutes} minutes` : `${totalMinutes} phút`;
 
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
+  if (language === 'en') return minutes ? `${hours} hours ${minutes} minutes` : `${hours} hours`;
   return minutes ? `${hours} giờ ${minutes} phút` : `${hours} giờ`;
 }
 
 export default function Home() {
+  const { language, setLanguage } = useUserLanguage();
   const [subdomain, setSubdomain] = useState('');
   const [registryDomains, setRegistryDomains] = useState<RegistryDomain[]>([defaultRegistryDomain]);
   const [parentDomainId, setParentDomainId] = useState(defaultRegistryDomain.id);
@@ -60,6 +116,7 @@ export default function Home() {
   const accessKey = `tk-${accessKeySuffix}`;
   const selectedParentDomain = registryDomains.find((domain) => domain.id === parentDomainId) ?? null;
   const selectedParentDomainName = selectedParentDomain?.hostname ?? '';
+  const t = <T,>(vi: T, en: T): T => language === 'en' ? en : vi;
   function withServerError(field: FieldName, state: FieldState): FieldState {
     return serverErrors[field] ? { kind: 'invalid', message: serverErrors[field] } : state;
   }
@@ -73,15 +130,15 @@ export default function Home() {
     subdomain: withServerError('subdomain', !subdomain.trim() && !requiredOnSubmit.subdomain
       ? { kind: 'idle', message: '' }
       : !isValidSubdomain(subdomain)
-        ? { kind: 'invalid', message: 'Tên phải dài 3–63 ký tự, chỉ gồm a–z, 0–9 và dấu gạch ngang.' }
+        ? { kind: 'invalid', message: t('Tên phải dài 3–63 ký tự, chỉ gồm a–z, 0–9 và dấu gạch ngang.', 'Use 3–63 characters: a–z, 0–9, and hyphens only.') }
         : availability === 'available'
-          ? { kind: 'valid', message: availabilityMessage || '✓ Tên có thể dùng.' }
+          ? { kind: 'valid', message: availabilityMessage || t('✓ Tên có thể dùng.', '✓ This name is available.') }
           : availability === 'taken' || availability === 'error'
-            ? { kind: 'invalid', message: availabilityMessage || 'Không thể dùng tên này.' }
-            : { kind: 'idle', message: availability === 'checking' ? 'Đang kiểm tra tên...' : 'Rời ô để kiểm tra tên.' }),
+            ? { kind: 'invalid', message: availabilityMessage || t('Không thể dùng tên này.', 'This name cannot be used.') }
+            : { kind: 'idle', message: availability === 'checking' ? t('Đang kiểm tra tên...', 'Checking name...') : t('Rời ô để kiểm tra tên.', 'Leave the field to check the name.') }),
     parentDomain: withServerError('parentDomain', !selectedParentDomain
-      ? { kind: 'invalid', message: 'Hãy chọn một domain đang mở đăng ký.' }
-      : { kind: 'valid', message: `✓ Đăng ký dưới .${selectedParentDomain.hostname}` }),
+      ? { kind: 'invalid', message: t('Hãy chọn một domain đang mở đăng ký.', 'Choose a domain that is open for registration.') }
+      : { kind: 'valid', message: `✓ ${t('Đăng ký dưới', 'Register under')} .${selectedParentDomain.hostname}` }),
     cnameTarget: withServerError('cnameTarget', requiredFieldState(
       'cnameTarget',
       Boolean(cnameTarget.trim()),
@@ -89,29 +146,29 @@ export default function Home() {
         cnameTarget.trim().toLowerCase().replace(/\.+$/, ''),
         registryDomains.map((domain) => domain.hostname),
       ),
-      '✓ CNAME hợp lệ.',
-      !cnameTarget.trim() ? 'Nhập CNAME đích.' : 'CNAME cần là hostname hợp lệ, ví dụ your-project.pages.dev.',
+      t('✓ CNAME hợp lệ.', '✓ Valid CNAME.'),
+      !cnameTarget.trim() ? t('Nhập CNAME đích.', 'Enter a CNAME destination.') : t('CNAME cần là hostname hợp lệ, ví dụ your-project.pages.dev.', 'Use a valid hostname, for example your-project.pages.dev.'),
     )),
     telegramUsername: withServerError('telegramUsername', requiredFieldState(
       'telegramUsername',
       Boolean(telegramUsername.trim()),
       isValidTelegramUsername(telegramUsername),
-      '✓ Telegram username hợp lệ.',
-      !telegramUsername.trim() ? 'Nhập Telegram username.' : 'Username Telegram dài 5–32 ký tự, bắt đầu bằng chữ và chỉ dùng chữ, số, _.',
+      t('✓ Telegram username hợp lệ.', '✓ Valid Telegram username.'),
+      !telegramUsername.trim() ? t('Nhập Telegram username.', 'Enter your Telegram username.') : t('Username Telegram dài 5–32 ký tự, bắt đầu bằng chữ và chỉ dùng chữ, số, _.', 'Use 5–32 characters, beginning with a letter; letters, numbers, and _ only.'),
     )),
     accessKey: withServerError('accessKey', requiredFieldState(
       'accessKey',
       Boolean(accessKeySuffix.trim()),
       isValidOwnerAccessKey(accessKey),
-      '✓ Access key đúng định dạng.',
-      !accessKeySuffix.trim() ? 'Nhập phần access key sau tk-.' : 'Phần sau tk- phải dài 11–29 ký tự, có cả chữ và số; chỉ dùng thêm . _ - khi cần.',
+      t('✓ Access key đúng định dạng.', '✓ Valid access key format.'),
+      !accessKeySuffix.trim() ? t('Nhập phần access key sau tk-.', 'Enter the access-key part after tk-.') : t('Phần sau tk- phải dài 11–29 ký tự, có cả chữ và số; chỉ dùng thêm . _ - khi cần.', 'The part after tk- must be 11–29 characters, include letters and numbers, and may use . _ -.'),
     )),
     rules: withServerError('rules', requiredFieldState(
       'rules',
       acceptedRules,
       acceptedRules,
-      '✓ Đã đồng ý quy định.',
-      'Bạn cần đồng ý với quy định để gửi yêu cầu.',
+      t('✓ Đã đồng ý quy định.', '✓ Rules accepted.'),
+      t('Bạn cần đồng ý với quy định để gửi yêu cầu.', 'You must accept the rules before sending a request.'),
     )),
   };
 
@@ -187,12 +244,12 @@ export default function Home() {
     if (!selectedParentDomain) {
       markTouched('parentDomain');
       setAvailability('error');
-      setAvailabilityMessage('Chưa có domain nào đang mở đăng ký.');
+      setAvailabilityMessage(t('Chưa có domain nào đang mở đăng ký.', 'No domains are currently open for registration.'));
       return 'error';
     }
     if (!isValidSubdomain(subdomain)) {
       setAvailability('error');
-      setAvailabilityMessage('Tên subdomain không hợp lệ hoặc đang được reserved.');
+      setAvailabilityMessage(t('Tên subdomain không hợp lệ hoặc đang được reserved.', 'This subdomain is invalid or reserved.'));
       return 'error';
     }
 
@@ -206,17 +263,17 @@ export default function Home() {
       if (candidate !== subdomain || candidateParentDomainId !== parentDomainId) return 'idle';
       if (!response.ok) {
         setAvailability('error');
-        setAvailabilityMessage(payload.error ?? 'Không thể kiểm tra tên lúc này.');
+        setAvailabilityMessage(language === 'en' ? 'Unable to check this name right now.' : (payload.error ?? 'Không thể kiểm tra tên lúc này.'));
         return 'error';
       }
       const result = payload.available ? 'available' : 'taken';
       setAvailability(result);
-      setAvailabilityMessage(payload.available ? '✓ Tên có thể dùng.' : 'Tên đã được đăng ký hoặc đang chờ duyệt.');
+      setAvailabilityMessage(payload.available ? t('✓ Tên có thể dùng.', '✓ This name is available.') : t('Tên đã được đăng ký hoặc đang chờ duyệt.', 'This name is already registered or awaiting review.'));
       return result;
     } catch {
       if (candidate === subdomain && candidateParentDomainId === parentDomainId) {
         setAvailability('error');
-        setAvailabilityMessage('Không thể kết nối registry. Hãy thử lại.');
+        setAvailabilityMessage(t('Không thể kết nối registry. Hãy thử lại.', 'Unable to reach the registry. Please try again.'));
       }
       return 'error';
     }
@@ -247,13 +304,13 @@ export default function Home() {
       && isValidOwnerAccessKey(accessKey)
       && acceptedRules;
     if (!localFieldsAreValid) {
-      setSubmission({ type: 'error', message: 'Hãy sửa các trường được đánh dấu đỏ trước khi gửi.' });
+      setSubmission({ type: 'error', message: t('Hãy sửa các trường được đánh dấu đỏ trước khi gửi.', 'Fix the fields marked in red before sending.') });
       return;
     }
 
     const currentAvailability = availability === 'available' ? 'available' : await checkAvailability();
     if (currentAvailability !== 'available') {
-      setSubmission({ type: 'error', message: 'Hãy chọn một subdomain còn trống trước khi gửi.' });
+      setSubmission({ type: 'error', message: t('Hãy chọn một subdomain còn trống trước khi gửi.', 'Choose an available subdomain before sending.') });
       return;
     }
 
@@ -268,7 +325,7 @@ export default function Home() {
       if (!response.ok || !payload.requestId) {
         if (payload.field) {
           const field = payload.field === 'parentDomainId' ? 'parentDomain' : payload.field;
-          setServerErrors((current) => ({ ...current, [field]: payload.error ?? 'Giá trị không hợp lệ.' }));
+          setServerErrors((current) => ({ ...current, [field]: language === 'en' ? 'This value is invalid.' : (payload.error ?? 'Giá trị không hợp lệ.') }));
           markTouched(field);
         }
         const headerRetryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
@@ -276,20 +333,21 @@ export default function Home() {
           typeof payload.retryAfterSeconds === 'number'
             ? payload.retryAfterSeconds
             : Number.isFinite(headerRetryAfter) ? headerRetryAfter : undefined,
+          language,
         );
-        const errorMessage = payload.error ?? 'Không thể gửi yêu cầu. Hãy thử lại.';
-        setSubmission({ type: 'error', message: retryAfter ? `${errorMessage} Thời gian chờ còn lại: khoảng ${retryAfter}.` : errorMessage });
+        const errorMessage = language === 'en' ? 'Unable to send the request. Please try again.' : (payload.error ?? 'Không thể gửi yêu cầu. Hãy thử lại.');
+        setSubmission({ type: 'error', message: retryAfter ? language === 'en' ? `${errorMessage} Try again in about ${retryAfter}.` : `${errorMessage} Thời gian chờ còn lại: khoảng ${retryAfter}.` : errorMessage });
         return;
       }
       setSubmission({ type: 'success', requestId: payload.requestId });
       setAvailability('idle');
       setAvailabilityMessage('');
     } catch {
-      setSubmission({ type: 'error', message: 'Không thể kết nối registry. Hãy thử lại.' });
+      setSubmission({ type: 'error', message: t('Không thể kết nối registry. Hãy thử lại.', 'Unable to reach the registry. Please try again.') });
     }
   }
 
-  const heroButtonLabel = availability === 'available' ? 'Đăng ký subdomain' : availability === 'checking' ? 'Đang kiểm tra...' : 'Kiểm tra subdomain';
+  const heroButtonLabel = availability === 'available' ? t('Đăng ký subdomain', 'Register subdomain') : availability === 'checking' ? t('Đang kiểm tra...', 'Checking...') : t('Kiểm tra subdomain', 'Check subdomain');
   const heroStatusClass = availability === 'available' ? 'field-good' : availability === 'taken' || availability === 'error' ? 'field-bad' : undefined;
 
   return (
@@ -299,58 +357,58 @@ export default function Home() {
           <span className="brand-block" aria-hidden="true"><i /><i /><i /><i /></span>
           <span>TAKESHI <span className="brand-dim">DOMAINS</span></span>
         </a>
-        <nav className="site-nav" aria-label="Main navigation"><a href="#request">Đăng ký</a><a href="#how">Cách hoạt động</a><a href="#rules">Quy định</a><a className="dns-panel-link" href="/manage">DNS Panel</a></nav>
+        <nav className="site-nav" aria-label={t('Điều hướng chính', 'Main navigation')}><a href="#request">{t('Đăng ký', 'Register')}</a><a href="#how">{t('Cách hoạt động', 'How it works')}</a><a href="#rules">{t('Quy định', 'Rules')}</a><a className="dns-panel-link" href="/manage">DNS Panel</a><UserLanguageToggle language={language} onChange={setLanguage} /></nav>
       </header>
 
       <section className="hero" id="top">
         <p className="eyebrow"><span className="pixel-dot" /> COMMUNITY SUBDOMAIN REGISTRY</p>
         <h1>Claim your<br /><span>.takeshi.dev</span></h1>
-        <p>Đăng ký subdomain miễn phí cho project, portfolio hoặc trang cá nhân của bạn.</p>
+        <p>{t('Đăng ký subdomain miễn phí cho project, portfolio hoặc trang cá nhân của bạn.', 'Claim a free subdomain for your project, portfolio, or personal site.')}</p>
         <div className="hero-name-check">
           <div className="hero-check-row">
-            <div className={inputClass('subdomain', 'field-combo')}><input id="hero-subdomain" aria-label="Kiểm tra subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" /><select className="domain-suffix-select" aria-label="Chọn domain" value={parentDomainId} onChange={(event) => selectParentDomain(event.target.value)} onBlur={() => markTouched('parentDomain')} disabled={registryDomains.length === 0}>{registryDomains.length === 0 ? <option value="">Không có domain</option> : registryDomains.map((domain) => <option key={domain.id} value={domain.id}>.{domain.hostname}</option>)}</select></div>
+            <div className={inputClass('subdomain', 'field-combo')}><input id="hero-subdomain" aria-label={t('Kiểm tra subdomain', 'Check subdomain')} placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" /><DomainSuffixPicker domains={registryDomains} value={parentDomainId} onChange={selectParentDomain} onBlur={() => markTouched('parentDomain')} emptyLabel={t('Không có domain', 'No domains')} chooseLabel={t('Chọn domain', 'Choose domain')} /></div>
             <a className="button secondary hero-check-button" href="#request" onClick={(event) => { if (availability !== 'available') { event.preventDefault(); if (availability !== 'checking') void checkAvailability(); } }} aria-disabled={availability === 'checking'}>{heroButtonLabel}</a>
           </div>
-          <small aria-live="polite" className={heroStatusClass}>{availability === 'checking' ? 'Đang kiểm tra tên...' : availabilityMessage}</small>
+          <small aria-live="polite" className={heroStatusClass}>{availability === 'checking' ? t('Đang kiểm tra tên...', 'Checking name...') : availabilityMessage}</small>
         </div>
       </section>
 
       <section className="content-grid" id="request">
         <form className="panel request-form" noValidate onSubmit={submitClaim}>
-          <div className="panel-heading"><span className="block-mark" aria-hidden="true" /><div><p>NEW REQUEST</p><h2>Đăng ký subdomain</h2></div></div>
-          <label htmlFor="subdomain">Tên bạn muốn dùng
-            <div className={inputClass('subdomain', 'field-combo')}><input id="subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" required /><select className="domain-suffix-select" aria-label="Chọn domain" value={parentDomainId} onChange={(event) => selectParentDomain(event.target.value)} onBlur={() => markTouched('parentDomain')} disabled={registryDomains.length === 0}>{registryDomains.length === 0 ? <option value="">Không có domain</option> : registryDomains.map((domain) => <option key={domain.id} value={domain.id}>.{domain.hostname}</option>)}</select></div>
-            {displayHint('subdomain', '3–63 ký tự: a–z, 0–9, dấu gạch ngang. Rời ô để kiểm tra tên.')}
+          <div className="panel-heading"><span className="block-mark" aria-hidden="true" /><div><p>NEW REQUEST</p><h2>{t('Đăng ký subdomain', 'Register a subdomain')}</h2></div></div>
+          <label htmlFor="subdomain">{t('Tên bạn muốn dùng', 'Your chosen name')}
+            <div className={inputClass('subdomain', 'field-combo')}><input id="subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" required /><DomainSuffixPicker domains={registryDomains} value={parentDomainId} onChange={selectParentDomain} onBlur={() => markTouched('parentDomain')} emptyLabel={t('Không có domain', 'No domains')} chooseLabel={t('Chọn domain', 'Choose domain')} /></div>
+            {displayHint('subdomain', t('3–63 ký tự: a–z, 0–9, dấu gạch ngang. Rời ô để kiểm tra tên.', '3–63 characters: a–z, 0–9, hyphens. Leave the field to check the name.'))}
           </label>
-          <label htmlFor="cname-target">CNAME đích
+          <label htmlFor="cname-target">{t('CNAME đích', 'CNAME destination')}
             <input id="cname-target" className={inputClass('cnameTarget')} placeholder="your-project.pages.dev" value={cnameTarget} onChange={(event) => { setCnameTarget(event.target.value); resetFieldFeedback('cnameTarget'); }} onBlur={() => markTouched('cnameTarget')} required />
-            {displayHint('cnameTarget', 'Thêm custom domain tại dịch vụ host của bạn trước khi gửi yêu cầu.')}
+            {displayHint('cnameTarget', t('Thêm custom domain tại dịch vụ host của bạn trước khi gửi yêu cầu.', 'Add this custom domain at your hosting provider before sending the request.'))}
           </label>
           <div className="form-pair">
             <label htmlFor="telegram-username">Telegram username
               <input id="telegram-username" className={inputClass('telegramUsername')} placeholder="username" value={telegramUsername} onChange={(event) => { setTelegramUsername(event.target.value.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32)); resetFieldFeedback('telegramUsername'); }} onBlur={() => markTouched('telegramUsername')} autoComplete="username" required />
-              {displayHint('telegramUsername', 'Nhập username, không cần dấu @.')}
+              {displayHint('telegramUsername', t('Nhập username, không cần dấu @.', 'Enter your username without @.'))}
             </label>
             <label htmlFor="access-key">Access key
               <div className={inputClass('accessKey', 'field-combo access-key-combo')}><b>tk-</b><input id="access-key" type={showAccessKey ? 'text' : 'password'} placeholder="your-key-part" value={accessKeySuffix} onChange={(event) => { setAccessKeySuffix(event.target.value.replace(/[^a-z0-9._-]/gi, '').slice(0, 29)); resetFieldFeedback('accessKey'); }} onBlur={() => markTouched('accessKey')} autoComplete="new-password" required /><HoldToRevealButton label="access key" onRevealChange={setShowAccessKey} /></div>
-              {displayHint('accessKey', 'Phần bạn đặt dài 11–29 ký tự, bắt buộc có cả chữ và số; chỉ dùng thêm . _ - khi cần.')}
+              {displayHint('accessKey', t('Phần bạn đặt dài 11–29 ký tự, bắt buộc có cả chữ và số; chỉ dùng thêm . _ - khi cần.', 'Use 11–29 characters with letters and numbers; . _ - are optional.'))}
             </label>
           </div>
-          <label className="check-row" htmlFor="rules"><input id="rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.</span></label>
+          <label className="check-row" htmlFor="rules"><input id="rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>{t('Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.', 'I agree to use this subdomain appropriately and follow the rules.')}</span></label>
           {touched.rules && fieldState.rules.kind !== 'idle' && <small className={fieldState.rules.kind === 'valid' ? 'field-good rules-feedback' : 'field-bad rules-feedback'}>{fieldState.rules.message}</small>}
           <label className="honeypot" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={website} onChange={(event) => setWebsite(event.target.value)} /></label>
           {submission.type === 'error' && <p className="form-message error" role="alert">{submission.message}</p>}
-          {submission.type === 'success' && <p className="form-message success" role="status">Đã nhận yêu cầu cho <strong>{subdomain}.{selectedParentDomainName}</strong>. Mã request: {submission.requestId.slice(0, 8)}.</p>}
-          <button className="button" type="submit" disabled={submission.type === 'loading' || submission.type === 'success'}>{submission.type === 'loading' ? 'Đang gửi...' : submission.type === 'success' ? 'Đã gửi' : 'Gửi yêu cầu'}</button>
+          {submission.type === 'success' && <p className="form-message success" role="status">{t('Đã nhận yêu cầu cho', 'Request received for')} <strong>{subdomain}.{selectedParentDomainName}</strong>. {t('Mã request:', 'Request ID:')} {submission.requestId.slice(0, 8)}.</p>}
+          <button className="button" type="submit" disabled={submission.type === 'loading' || submission.type === 'success'}>{submission.type === 'loading' ? t('Đang gửi...', 'Sending...') : submission.type === 'success' ? t('Đã gửi', 'Sent') : t('Gửi yêu cầu', 'Send request')}</button>
         </form>
 
         <aside className="side-stack">
-          <section className="panel compact-panel" id="how"><p className="eyebrow"><span className="pixel-dot" /> HOW IT WORKS</p><h2>Ba bước là xong</h2><ol className="steps"><li><b>01</b><span>Thêm domain này vào trang cấu hình của host: <code>name.takeshi.dev</code>.</span></li><li><b>02</b><span>Gửi CNAME đích qua form bên cạnh.</span></li><li><b>03</b><span>Chờ duyệt. Khi được duyệt, DNS record sẽ được tạo.</span></li></ol></section>
-          <section className="panel compact-panel" id="rules"><p className="eyebrow"><span className="pixel-dot" /> RULES</p><h2>Dùng cho đúng</h2><ul className="rules-list"><li>Mọi yêu cầu được duyệt thủ công; CNAME chính chỉ được tạo sau khi duyệt.</li><li>Sau khi active, dùng DNS Panel và access key để quản lý record dưới subdomain của bạn.</li><li>Giữ access key riêng tư. Phishing, spam, malware, mạo danh hoặc lạm dụng sẽ bị từ chối hoặc gỡ.</li></ul></section>
+          <section className="panel compact-panel" id="how"><p className="eyebrow"><span className="pixel-dot" /> HOW IT WORKS</p><h2>{t('Ba bước là xong', 'Three simple steps')}</h2><ol className="steps"><li><b>01</b><span>{t(<>Thêm domain này vào trang cấu hình của host: <code>name.takeshi.dev</code>.</>, <>Add this domain in your hosting provider: <code>name.takeshi.dev</code>.</>)}</span></li><li><b>02</b><span>{t('Gửi CNAME đích qua form bên cạnh.', 'Submit the destination CNAME in the form.')}</span></li><li><b>03</b><span>{t('Chờ duyệt. Khi được duyệt, DNS record sẽ được tạo.', 'Wait for review. Once approved, the DNS record is created.')}</span></li></ol></section>
+          <section className="panel compact-panel" id="rules"><p className="eyebrow"><span className="pixel-dot" /> RULES</p><h2>{t('Dùng cho đúng', 'Use it responsibly')}</h2><ul className="rules-list"><li>{t('Mọi yêu cầu được duyệt thủ công; CNAME chính chỉ được tạo sau khi duyệt.', 'Every request is reviewed manually; the primary CNAME is created only after approval.')}</li><li>{t('Sau khi active, dùng DNS Panel và access key để quản lý record dưới subdomain của bạn.', 'After activation, use DNS Panel and your access key to manage records below your subdomain.')}</li><li>{t('Giữ access key riêng tư. Phishing, spam, malware, mạo danh hoặc lạm dụng sẽ bị từ chối hoặc gỡ.', 'Keep your access key private. Phishing, spam, malware, impersonation, or abuse will be rejected or removed.')}</li></ul></section>
         </aside>
       </section>
 
-      <footer><span>TAKESHI DOMAINS</span><span>Duyệt thủ công · DNS Panel sau khi được duyệt</span><span>© 2026</span></footer>
+      <footer><span>TAKESHI DOMAINS</span><span>{t('Duyệt thủ công · DNS Panel sau khi được duyệt', 'Manual review · DNS Panel after approval')}</span><span>© 2026</span></footer>
     </main>
   );
 }
