@@ -1,5 +1,29 @@
 import { bigint, boolean, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
 
+// This stable row is seeded by `ensureRegistrySchema`. Keeping a default makes
+// the multi-domain migration backwards compatible while older API/UI callers
+// still create takeshi.dev claims without sending an explicit parent domain.
+export const TAKESHI_DEV_MANAGED_DOMAIN_ID = 'managed-domain-takeshi-dev';
+export const TAKESHI_DEV_HOSTNAME = 'takeshi.dev';
+
+/**
+ * Parent zones that the registry is allowed to administer. A Cloudflare API
+ * token remains an environment secret; this stores only the non-secret zone
+ * identifier selected by the administrator for that parent hostname.
+ */
+export const managedDomains = pgTable(
+  'managed_domains',
+  {
+    id: text('id').primaryKey(),
+    hostname: text('hostname').notNull().unique(),
+    cloudflareZoneId: text('cloudflare_zone_id'),
+    status: text('status', { enum: ['active', 'archived'] }).notNull().default('active'),
+    createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+    updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+  },
+  (table) => [index('idx_managed_domains_status_hostname').on(table.status, table.hostname)],
+);
+
 export const subdomainRequests = pgTable(
   'subdomain_requests',
   {
@@ -8,6 +32,10 @@ export const subdomainRequests = pgTable(
     // migration prevents duplicate pending/active claims while allowing a name to
     // be requested again after it was rejected, cancelled, or released.
     subdomain: text('subdomain').notNull(),
+    parentDomainId: text('parent_domain_id')
+      .notNull()
+      .default(TAKESHI_DEV_MANAGED_DOMAIN_ID)
+      .references(() => managedDomains.id, { onDelete: 'restrict' }),
     cnameTarget: text('cname_target').notNull(),
     githubHandle: text('github_handle'),
     email: text('email').notNull(),
@@ -23,6 +51,7 @@ export const subdomainRequests = pgTable(
     cloudflareRecordId: text('cloudflare_record_id'),
   },
   (table) => [
+    index('idx_subdomain_requests_parent_status_created').on(table.parentDomainId, table.status, table.createdAt),
     index('idx_subdomain_requests_status_created').on(table.status, table.createdAt),
     index('idx_subdomain_requests_email_created').on(table.email, table.createdAt),
     index('idx_subdomain_requests_telegram_created').on(table.telegramUsername, table.createdAt),
@@ -48,14 +77,22 @@ export const subdomains = pgTable(
   'subdomains',
   {
     id: text('id').primaryKey(),
-    label: text('label').notNull().unique(),
+    label: text('label').notNull(),
+    parentDomainId: text('parent_domain_id')
+      .notNull()
+      .default(TAKESHI_DEV_MANAGED_DOMAIN_ID)
+      .references(() => managedDomains.id, { onDelete: 'restrict' }),
     ownerId: text('owner_id').notNull().references(() => owners.id, { onDelete: 'restrict' }),
     status: text('status', { enum: ['active', 'suspended'] }).notNull().default('active'),
     requestId: text('request_id').references(() => subdomainRequests.id, { onDelete: 'set null' }),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   },
-  (table) => [index('idx_subdomains_owner_status').on(table.ownerId, table.status)],
+  (table) => [
+    uniqueIndex('idx_subdomains_parent_label_unique').on(table.parentDomainId, table.label),
+    index('idx_subdomains_parent_owner_status').on(table.parentDomainId, table.ownerId, table.status),
+    index('idx_subdomains_owner_status').on(table.ownerId, table.status),
+  ],
 );
 
 export const dnsRecords = pgTable(
@@ -227,6 +264,9 @@ export const dnsEvents = pgTable(
     // trail remains intact.
     subdomainId: text('subdomain_id').references(() => subdomains.id, { onDelete: 'set null' }),
     domainLabel: text('domain_label'),
+    // Store the hostname component rather than an FK: an audit event must
+    // remain readable even after its subdomain or managed parent is archived.
+    parentDomain: text('parent_domain').notNull().default(TAKESHI_DEV_HOSTNAME),
     recordId: text('record_id'),
     actorType: text('actor_type', { enum: ['admin', 'owner', 'system'] }).notNull(),
     action: text('action').notNull(),

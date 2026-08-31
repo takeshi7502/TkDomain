@@ -2,10 +2,9 @@ import { and, count, eq } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getDb } from '@/db';
-import { dnsEvents, dnsRecords, owners, subdomainRequests, subdomains } from '@/db/schema';
+import { dnsEvents, dnsRecords, managedDomains, owners, subdomainRequests, subdomains } from '@/db/schema';
 import { deleteCloudflareRecord } from '@/lib/cloudflare';
 import { getOwnerSession } from '@/lib/owner-auth';
-import { BASE_DOMAIN } from '@/lib/registry';
 import { enforceRegistryRateLimit, enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 import {
   consumeTelegramVerificationCode,
@@ -19,9 +18,13 @@ function hasTrustedOrigin(request: NextRequest) {
 }
 
 async function ownedActiveSubdomain(ownerId: string, subdomainId: string) {
-  return getDb().query.subdomains.findFirst({
-    where: and(eq(subdomains.id, subdomainId), eq(subdomains.ownerId, ownerId), eq(subdomains.status, 'active')),
-  });
+  const rows = await getDb()
+    .select({ domain: subdomains, parentDomain: managedDomains })
+    .from(subdomains)
+    .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
+    .where(and(eq(subdomains.id, subdomainId), eq(subdomains.ownerId, ownerId), eq(subdomains.status, 'active')))
+    .limit(1);
+  return rows[0] ?? null;
 }
 
 /** Request an out-of-band deletion code when the owner has linked Telegram. */
@@ -49,13 +52,13 @@ export async function POST(request: NextRequest) {
 
   const domain = await ownedActiveSubdomain(session.owner.id, subdomainId);
   if (!domain) return NextResponse.json({ error: 'Subdomain not found.' }, { status: 404 });
-  const hostname = `${domain.label}.${BASE_DOMAIN}`;
+  const hostname = `${domain.domain.label}.${domain.parentDomain.hostname}`;
   if (body.confirmation !== hostname) return NextResponse.json({ error: `Type ${hostname} exactly to confirm deletion.` }, { status: 400 });
 
   const delivery = await sendTelegramVerificationCode({
     ownerId: session.owner.id,
     purpose: 'subdomain_delete',
-    subject: domain.id,
+    subject: domain.domain.id,
   });
   if (delivery.status === 'not-linked') return NextResponse.json({ ok: true, otpRequired: false });
   if (delivery.status === 'bot-not-configured') {
@@ -79,8 +82,9 @@ export async function DELETE(request: NextRequest) {
   const db = getDb();
   const domain = await ownedActiveSubdomain(session.owner.id, body.subdomainId);
   if (!domain) return NextResponse.json({ error: 'Subdomain not found.' }, { status: 404 });
+  if (!domain.parentDomain.cloudflareZoneId) return NextResponse.json({ error: 'Cloudflare chưa được cấu hình cho domain gốc này. Liên hệ Admin.' }, { status: 409 });
 
-  const hostname = `${domain.label}.${BASE_DOMAIN}`;
+  const hostname = `${domain.domain.label}.${domain.parentDomain.hostname}`;
   if (body.confirmation !== hostname) return NextResponse.json({ error: `Type ${hostname} exactly to confirm deletion.` }, { status: 400 });
 
   const linkedTelegram = await getTelegramLinkForOwner(session.owner.id);
@@ -99,7 +103,7 @@ export async function DELETE(request: NextRequest) {
     const verification = await consumeTelegramVerificationCode({
       ownerId: session.owner.id,
       purpose: 'subdomain_delete',
-      subject: domain.id,
+      subject: domain.domain.id,
       code: body.code ?? '',
     });
     if (!verification.verified) {
@@ -119,9 +123,9 @@ export async function DELETE(request: NextRequest) {
     proxied: dnsRecords.proxied,
     priority: dnsRecords.priority,
     isPrimary: dnsRecords.isPrimary,
-  }).from(dnsRecords).where(eq(dnsRecords.subdomainId, domain.id));
+  }).from(dnsRecords).where(eq(dnsRecords.subdomainId, domain.domain.id));
   try {
-    for (const record of records) await deleteCloudflareRecord(record.cloudflareRecordId);
+    for (const record of records) await deleteCloudflareRecord(record.cloudflareRecordId, domain.parentDomain.cloudflareZoneId);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Cloudflare could not remove every DNS record.' }, { status: 502 });
   }
@@ -133,8 +137,9 @@ export async function DELETE(request: NextRequest) {
       await tx.insert(dnsEvents).values([
         ...records.map((record) => ({
           id: crypto.randomUUID(),
-          subdomainId: domain.id,
-          domainLabel: domain.label,
+          subdomainId: domain.domain.id,
+          domainLabel: domain.domain.label,
+          parentDomain: domain.parentDomain.hostname,
           recordId: record.id,
           actorType: 'owner' as const,
           action: record.isPrimary ? 'primary_record_deleted' : 'child_record_deleted',
@@ -151,23 +156,24 @@ export async function DELETE(request: NextRequest) {
         })),
         {
           id: crypto.randomUUID(),
-          subdomainId: domain.id,
-          domainLabel: domain.label,
+          subdomainId: domain.domain.id,
+          domainLabel: domain.domain.label,
+          parentDomain: domain.parentDomain.hostname,
           actorType: 'owner',
           action: 'subdomain_released',
           details: { hostname, deletedRecordCount: records.length },
           createdAt: now,
         },
       ]);
-      if (domain.requestId) {
+      if (domain.domain.requestId) {
         const released = await tx.update(subdomainRequests)
           .set({ status: 'released', releasedAt: now })
-          .where(and(eq(subdomainRequests.id, domain.requestId), eq(subdomainRequests.status, 'active')))
+          .where(and(eq(subdomainRequests.id, domain.domain.requestId), eq(subdomainRequests.status, 'active')))
           .returning({ id: subdomainRequests.id });
         if (released.length === 0) throw new Error('Request status changed before the subdomain was released.');
       }
       const deleted = await tx.delete(subdomains)
-        .where(and(eq(subdomains.id, domain.id), eq(subdomains.ownerId, session.owner.id), eq(subdomains.status, 'active')))
+        .where(and(eq(subdomains.id, domain.domain.id), eq(subdomains.ownerId, session.owner.id), eq(subdomains.status, 'active')))
         .returning({ id: subdomains.id });
       if (deleted.length === 0) throw new Error('Subdomain status changed before deletion.');
       const [{ value: remainingDomains }] = await tx.select({ value: count() }).from(subdomains).where(eq(subdomains.ownerId, session.owner.id));

@@ -2,7 +2,7 @@ import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
-import { owners, subdomainRequests } from '@/db/schema';
+import { managedDomains, owners, subdomainRequests } from '@/db/schema';
 import { hashOwnerAccessKey } from '@/lib/owner-auth';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 import { isValidSubdomain, normalizeSubdomain, validateClaim } from '@/lib/registry';
@@ -23,17 +23,28 @@ function retryAfterResponse(error: string, retryAfterSeconds: number, field?: st
 
 export async function GET(request: NextRequest) {
   const subdomain = normalizeSubdomain(request.nextUrl.searchParams.get('subdomain') ?? '');
+  const parentDomainId = request.nextUrl.searchParams.get('domainId')?.trim() ?? '';
   if (!subdomain) return NextResponse.json({ error: 'Missing subdomain.' }, { status: 400 });
   if (!isValidSubdomain(subdomain)) return NextResponse.json({ error: 'Invalid subdomain.' }, { status: 400 });
+  if (!parentDomainId || parentDomainId.length > 120) return NextResponse.json({ error: 'Missing parent domain.' }, { status: 400 });
 
   const limit = await enforceRegistryRateLimit(request, 'availability-check', 15, 60_000);
   if (!limit.allowed) return NextResponse.json({ error: 'Too many name checks. Please try again shortly.' }, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } });
   await ensureRegistrySchema();
-  const existing = await getDb().query.subdomainRequests.findFirst({
-    where: and(eq(subdomainRequests.subdomain, subdomain), inArray(subdomainRequests.status, RESERVED_STATUSES)),
+  const db = getDb();
+  const parentDomain = await db.query.managedDomains.findFirst({
+    where: and(eq(managedDomains.id, parentDomainId), eq(managedDomains.status, 'active')),
+  });
+  if (!parentDomain || !parentDomain.cloudflareZoneId) return NextResponse.json({ error: 'Tên miền này không còn nhận đăng ký.' }, { status: 404 });
+  const existing = await db.query.subdomainRequests.findFirst({
+    where: and(
+      eq(subdomainRequests.parentDomainId, parentDomain.id),
+      eq(subdomainRequests.subdomain, subdomain),
+      inArray(subdomainRequests.status, RESERVED_STATUSES),
+    ),
     columns: { id: true },
   });
-  return NextResponse.json({ subdomain, available: !existing });
+  return NextResponse.json({ subdomain, parentDomain: parentDomain.hostname, available: !existing });
 }
 
 export async function POST(request: NextRequest) {
@@ -43,11 +54,25 @@ export async function POST(request: NextRequest) {
   const claimInput = body !== null && typeof body === 'object'
     ? body as Parameters<typeof validateClaim>[0]
     : {};
-  const result = validateClaim(claimInput);
-  if ('error' in result) return NextResponse.json(result, { status: 400 });
 
   await ensureRegistrySchema();
   const db = getDb();
+  const requestedParentId = typeof claimInput.parentDomainId === 'string' ? claimInput.parentDomainId.trim() : '';
+  if (!requestedParentId || requestedParentId.length > 120) {
+    return NextResponse.json({ error: 'Hãy chọn một domain để đăng ký.', field: 'parentDomainId' }, { status: 400 });
+  }
+  const [parentDomain, activeDomains] = await Promise.all([
+    db.query.managedDomains.findFirst({
+      where: and(eq(managedDomains.id, requestedParentId), eq(managedDomains.status, 'active')),
+    }),
+    db.select({ hostname: managedDomains.hostname }).from(managedDomains).where(eq(managedDomains.status, 'active')),
+  ]);
+  if (!parentDomain || !parentDomain.cloudflareZoneId) {
+    return NextResponse.json({ error: 'Domain đã chọn không còn nhận đăng ký. Hãy tải lại trang và chọn domain khác.', field: 'parentDomainId' }, { status: 409 });
+  }
+  const result = validateClaim(claimInput, activeDomains.map((domain) => domain.hostname));
+  if ('error' in result) return NextResponse.json(result, { status: 400 });
+
   const now = Date.now();
   const accessKeyHash = hashOwnerAccessKey(result.value.accessKey);
   const recentTelegramRequests = await db
@@ -71,7 +96,11 @@ export async function POST(request: NextRequest) {
   }
 
   const existing = await db.query.subdomainRequests.findFirst({
-    where: and(eq(subdomainRequests.subdomain, result.value.subdomain), inArray(subdomainRequests.status, RESERVED_STATUSES)),
+    where: and(
+      eq(subdomainRequests.parentDomainId, parentDomain.id),
+      eq(subdomainRequests.subdomain, result.value.subdomain),
+      inArray(subdomainRequests.status, RESERVED_STATUSES),
+    ),
     columns: { id: true },
   });
   if (existing) return NextResponse.json({ error: 'Subdomain này đã có người đăng ký hoặc đang chờ duyệt.', field: 'subdomain' }, { status: 409 });
@@ -106,6 +135,7 @@ export async function POST(request: NextRequest) {
     await db.insert(subdomainRequests).values({
       id,
       subdomain: result.value.subdomain,
+      parentDomainId: parentDomain.id,
       cnameTarget: result.value.cnameTarget,
       githubHandle: null,
       email: `telegram:${result.value.telegramUsername}`,
@@ -124,7 +154,7 @@ export async function POST(request: NextRequest) {
   // A delivery failure must never invalidate a successfully stored request.
   await notifyAdminOfNewRequest({
     requestId: id,
-    subdomain: result.value.subdomain,
+    hostname: `${result.value.subdomain}.${parentDomain.hostname}`,
     cnameTarget: result.value.cnameTarget,
     telegramUsername: result.value.telegramUsername,
   });

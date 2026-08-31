@@ -2,7 +2,7 @@ import { desc, eq } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
-import { owners, subdomainRequests, subdomains } from '@/db/schema';
+import { managedDomains, owners, subdomainRequests, subdomains } from '@/db/schema';
 import {
   clearOwnerSessionCookie,
   clearPendingRequestSessionCookie,
@@ -42,18 +42,23 @@ async function ownerProfile(owner: typeof owners.$inferSelect) {
 
 async function ownerPayload(owner: typeof owners.$inferSelect) {
   const domains = await getDb()
-    .select({ id: subdomains.id, label: subdomains.label, status: subdomains.status })
+    .select({ id: subdomains.id, label: subdomains.label, parentDomain: managedDomains.hostname, status: subdomains.status })
     .from(subdomains)
+    .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
     .where(eq(subdomains.ownerId, owner.id));
   return { type: 'owner' as const, owner: await ownerProfile(owner), subdomains: domains };
 }
 
-function requestPayload(requestRecord: typeof subdomainRequests.$inferSelect) {
+async function requestPayload(requestRecord: typeof subdomainRequests.$inferSelect) {
+  const parentDomain = await getDb().query.managedDomains.findFirst({
+    where: eq(managedDomains.id, requestRecord.parentDomainId),
+    columns: { hostname: true },
+  });
   return {
     type: requestRecord.status === 'pending' ? 'pending' as const : 'rejected' as const,
     request: {
       id: requestRecord.id,
-      hostname: `${requestRecord.subdomain}.${BASE_DOMAIN}`,
+      hostname: `${requestRecord.subdomain}.${parentDomain?.hostname ?? BASE_DOMAIN}`,
       cnameTarget: requestRecord.cnameTarget,
       telegramUsername: requestRecord.telegramUsername,
       status: requestRecord.status,
@@ -87,7 +92,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (requestRecord.status === 'pending' || requestRecord.status === 'rejected') {
-    return NextResponse.json(requestPayload(requestRecord));
+    return NextResponse.json(await requestPayload(requestRecord));
   }
 
   const response = NextResponse.json({ error: 'Phiên theo dõi yêu cầu này không còn hợp lệ.' }, { status: 401 });
@@ -128,7 +133,7 @@ export async function POST(request: NextRequest) {
   }
 
   const token = await createPendingRequestSession(requestRecord.id);
-  const response = NextResponse.json({ ok: true, ...requestPayload(requestRecord) });
+      const response = NextResponse.json({ ok: true, ...(await requestPayload(requestRecord)) });
   clearOwnerSessionCookie(response);
   setPendingRequestSessionCookie(response, token);
   return response;

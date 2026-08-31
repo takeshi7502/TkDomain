@@ -2,7 +2,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getDb } from '@/db';
-import { subdomainRequests } from '@/db/schema';
+import { managedDomains, subdomainRequests } from '@/db/schema';
 import {
   clearPendingRequestSessionCookie,
   getPendingRequestSession,
@@ -20,7 +20,11 @@ export async function DELETE(request: NextRequest) {
   const session = await getPendingRequestSession(request);
   if (!session) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   const requestRecord = session.request;
-  const hostname = `${requestRecord.subdomain}.${BASE_DOMAIN}`;
+  const parentDomain = await getDb().query.managedDomains.findFirst({
+    where: eq(managedDomains.id, requestRecord.parentDomainId),
+    columns: { hostname: true },
+  });
+  const hostname = `${requestRecord.subdomain}.${parentDomain?.hostname ?? BASE_DOMAIN}`;
 
   let body: { confirmation?: string };
   try { body = await request.json() as { confirmation?: string }; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }

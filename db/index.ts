@@ -1,6 +1,7 @@
 import { neon, Pool } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-serverless';
 import * as schema from './schema';
+import { TAKESHI_DEV_HOSTNAME, TAKESHI_DEV_MANAGED_DOMAIN_ID } from './schema';
 
 let registrySchemaReady: Promise<void> | undefined;
 let databasePool: Pool | undefined;
@@ -17,9 +18,38 @@ export function ensureRegistrySchema() {
 
 async function createRegistrySchema() {
   const sql = getSql();
+  const now = Date.now();
+  const legacyZoneId = process.env.CLOUDFLARE_ZONE_ID?.trim() || null;
+
+  // Parent domains are configuration rows, not environment-specific branches
+  // of the schema. The original takeshi.dev zone is seeded deterministically
+  // so every existing request/subdomain can be migrated without a data copy.
+  await sql.query(`CREATE TABLE IF NOT EXISTS managed_domains (
+    id TEXT PRIMARY KEY NOT NULL,
+    hostname TEXT NOT NULL UNIQUE,
+    cloudflare_zone_id TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+  )`);
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_managed_domains_status_hostname ON managed_domains (status, hostname)');
+  await sql.query(
+    `INSERT INTO managed_domains (id, hostname, cloudflare_zone_id, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'active', $4, $4)
+     ON CONFLICT (id) DO UPDATE SET
+       cloudflare_zone_id = COALESCE(managed_domains.cloudflare_zone_id, EXCLUDED.cloudflare_zone_id),
+       updated_at = CASE
+         WHEN managed_domains.cloudflare_zone_id IS NULL AND EXCLUDED.cloudflare_zone_id IS NOT NULL
+           THEN EXCLUDED.updated_at
+         ELSE managed_domains.updated_at
+       END`,
+    [TAKESHI_DEV_MANAGED_DOMAIN_ID, TAKESHI_DEV_HOSTNAME, legacyZoneId, now],
+  );
+
   await sql.query(`CREATE TABLE IF NOT EXISTS subdomain_requests (
     id TEXT PRIMARY KEY NOT NULL,
     subdomain TEXT NOT NULL,
+    parent_domain_id TEXT NOT NULL DEFAULT '${TAKESHI_DEV_MANAGED_DOMAIN_ID}' REFERENCES managed_domains(id) ON DELETE RESTRICT,
     cname_target TEXT NOT NULL,
     github_handle TEXT,
     email TEXT NOT NULL,
@@ -34,10 +64,29 @@ async function createRegistrySchema() {
     reviewer_note TEXT,
     cloudflare_record_id TEXT
   )`);
+  await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS parent_domain_id TEXT');
+  await sql.query('UPDATE subdomain_requests SET parent_domain_id = $1 WHERE parent_domain_id IS NULL', [TAKESHI_DEV_MANAGED_DOMAIN_ID]);
+  await sql.query(`ALTER TABLE subdomain_requests
+    ALTER COLUMN parent_domain_id SET DEFAULT '${TAKESHI_DEV_MANAGED_DOMAIN_ID}'`);
+  await sql.query('ALTER TABLE subdomain_requests ALTER COLUMN parent_domain_id SET NOT NULL');
+  await sql.query(`DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conrelid = 'subdomain_requests'::regclass
+        AND conname = 'subdomain_requests_parent_domain_id_fkey'
+    ) THEN
+      ALTER TABLE subdomain_requests
+        ADD CONSTRAINT subdomain_requests_parent_domain_id_fkey
+        FOREIGN KEY (parent_domain_id) REFERENCES managed_domains(id) ON DELETE RESTRICT;
+    END IF;
+  END $$`);
   // Keep every finished request as history, while keeping a name exclusive
-  // during its pending/active lifecycle.
+  // only inside its managed parent domain during the pending/active lifecycle.
   await sql.query('DROP INDEX IF EXISTS subdomain_requests_subdomain_unique');
-  await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_subdomain_requests_open_subdomain ON subdomain_requests (subdomain) WHERE status IN ('pending', 'active')");
+  await sql.query('DROP INDEX IF EXISTS idx_subdomain_requests_open_subdomain');
+  await sql.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_subdomain_requests_open_parent_subdomain ON subdomain_requests (parent_domain_id, subdomain) WHERE status IN ('pending', 'active')");
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_parent_status_created ON subdomain_requests (parent_domain_id, status, created_at)');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_status_created ON subdomain_requests (status, created_at)');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_email_created ON subdomain_requests (email, created_at)');
   await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS telegram_username TEXT');
@@ -63,13 +112,56 @@ async function createRegistrySchema() {
   await sql.query('CREATE INDEX IF NOT EXISTS idx_owners_telegram_username ON owners (telegram_username)');
   await sql.query(`CREATE TABLE IF NOT EXISTS subdomains (
     id TEXT PRIMARY KEY NOT NULL,
-    label TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    parent_domain_id TEXT NOT NULL DEFAULT '${TAKESHI_DEV_MANAGED_DOMAIN_ID}' REFERENCES managed_domains(id) ON DELETE RESTRICT,
     owner_id TEXT NOT NULL REFERENCES owners(id) ON DELETE RESTRICT,
     status TEXT NOT NULL DEFAULT 'active',
     request_id TEXT REFERENCES subdomain_requests(id) ON DELETE SET NULL,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL
   )`);
+  await sql.query('ALTER TABLE subdomains ADD COLUMN IF NOT EXISTS parent_domain_id TEXT');
+  await sql.query('UPDATE subdomains SET parent_domain_id = $1 WHERE parent_domain_id IS NULL', [TAKESHI_DEV_MANAGED_DOMAIN_ID]);
+  await sql.query(`ALTER TABLE subdomains
+    ALTER COLUMN parent_domain_id SET DEFAULT '${TAKESHI_DEV_MANAGED_DOMAIN_ID}'`);
+  await sql.query('ALTER TABLE subdomains ALTER COLUMN parent_domain_id SET NOT NULL');
+  await sql.query(`DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conrelid = 'subdomains'::regclass
+        AND conname = 'subdomains_parent_domain_id_fkey'
+    ) THEN
+      ALTER TABLE subdomains
+        ADD CONSTRAINT subdomains_parent_domain_id_fkey
+        FOREIGN KEY (parent_domain_id) REFERENCES managed_domains(id) ON DELETE RESTRICT;
+    END IF;
+  END $$`);
+  // The original schema made `label` globally unique. Remove only that
+  // single-column constraint; the new compound index below allows the same
+  // label under separate admin-managed parents.
+  await sql.query(`DO $$
+  DECLARE old_constraint TEXT;
+  BEGIN
+    FOR old_constraint IN
+      SELECT con.conname
+      FROM pg_constraint con
+      WHERE con.conrelid = 'subdomains'::regclass
+        AND con.contype = 'u'
+        AND array_length(con.conkey, 1) = 1
+        AND con.conkey[1] = (
+          SELECT attnum
+          FROM pg_attribute
+          WHERE attrelid = 'subdomains'::regclass
+            AND attname = 'label'
+            AND NOT attisdropped
+        )
+    LOOP
+      EXECUTE format('ALTER TABLE subdomains DROP CONSTRAINT %I', old_constraint);
+    END LOOP;
+  END $$`);
+  await sql.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_subdomains_parent_label_unique ON subdomains (parent_domain_id, label)');
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomains_parent_owner_status ON subdomains (parent_domain_id, owner_id, status)');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomains_owner_status ON subdomains (owner_id, status)');
   await sql.query(`CREATE TABLE IF NOT EXISTS dns_records (
     id TEXT PRIMARY KEY NOT NULL,
@@ -165,6 +257,7 @@ async function createRegistrySchema() {
     id TEXT PRIMARY KEY NOT NULL,
     subdomain_id TEXT REFERENCES subdomains(id) ON DELETE SET NULL,
     domain_label TEXT,
+    parent_domain TEXT NOT NULL DEFAULT '${TAKESHI_DEV_HOSTNAME}',
     record_id TEXT,
     actor_type TEXT NOT NULL,
     action TEXT NOT NULL,
@@ -172,6 +265,11 @@ async function createRegistrySchema() {
     created_at BIGINT NOT NULL
   )`);
   await sql.query('ALTER TABLE dns_events ADD COLUMN IF NOT EXISTS domain_label TEXT');
+  await sql.query('ALTER TABLE dns_events ADD COLUMN IF NOT EXISTS parent_domain TEXT');
+  await sql.query('UPDATE dns_events SET parent_domain = $1 WHERE parent_domain IS NULL OR parent_domain = \'\'', [TAKESHI_DEV_HOSTNAME]);
+  await sql.query(`ALTER TABLE dns_events
+    ALTER COLUMN parent_domain SET DEFAULT '${TAKESHI_DEV_HOSTNAME}'`);
+  await sql.query('ALTER TABLE dns_events ALTER COLUMN parent_domain SET NOT NULL');
   await sql.query('ALTER TABLE dns_events ALTER COLUMN subdomain_id DROP NOT NULL');
   await sql.query(`UPDATE dns_events AS event
     SET domain_label = subdomain.label
@@ -207,6 +305,7 @@ async function createRegistrySchema() {
     END IF;
   END $$`);
   await sql.query('CREATE INDEX IF NOT EXISTS idx_dns_events_subdomain_created ON dns_events (subdomain_id, created_at)');
+  await sql.query('CREATE INDEX IF NOT EXISTS idx_dns_events_parent_domain_created ON dns_events (parent_domain, created_at)');
 
   // Bring already-approved CNAMEs into the owner panel without changing their DNS records.
   await sql.query(`INSERT INTO owners (id, email, github_handle, status, created_at, updated_at)
@@ -214,16 +313,16 @@ async function createRegistrySchema() {
     FROM subdomain_requests
     WHERE status = 'active' AND telegram_username IS NULL
     ON CONFLICT (email) DO NOTHING`);
-  await sql.query(`INSERT INTO subdomains (id, label, owner_id, status, request_id, created_at, updated_at)
-    SELECT 'legacy-subdomain-' || r.id, r.subdomain, o.id, 'active', r.id, r.created_at, r.reviewed_at
+  await sql.query(`INSERT INTO subdomains (id, label, parent_domain_id, owner_id, status, request_id, created_at, updated_at)
+    SELECT 'legacy-subdomain-' || r.id, r.subdomain, r.parent_domain_id, o.id, 'active', r.id, r.created_at, r.reviewed_at
     FROM subdomain_requests r
     JOIN owners o ON o.email = r.email
     WHERE r.status = 'active' AND r.telegram_username IS NULL
-    ON CONFLICT (label) DO NOTHING`);
+    ON CONFLICT (parent_domain_id, label) DO NOTHING`);
   await sql.query(`INSERT INTO dns_records (id, subdomain_id, record_type, record_name, content, ttl, proxied, cloudflare_record_id, created_at, updated_at)
     SELECT 'legacy-record-' || r.id, s.id, 'CNAME', '@', r.cname_target, 1, FALSE, r.cloudflare_record_id, r.created_at, r.reviewed_at
     FROM subdomain_requests r
-    JOIN subdomains s ON s.label = r.subdomain
+    JOIN subdomains s ON s.label = r.subdomain AND s.parent_domain_id = r.parent_domain_id
     WHERE r.status = 'active' AND r.cloudflare_record_id IS NOT NULL
     ON CONFLICT (cloudflare_record_id) DO NOTHING`);
   await sql.query(`UPDATE dns_records d

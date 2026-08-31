@@ -5,6 +5,7 @@ import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
 import { ensureRegistrySchema, getDb } from '@/db';
 import {
   dnsEvents,
+  managedDomains,
   owners,
   subdomains,
   telegramLinkTokens,
@@ -13,7 +14,7 @@ import {
   telegramVerificationChallenges,
   telegramWebhookUpdates,
 } from '@/db/schema';
-import { isValidTelegramUsername, normalizeTelegramUsername } from '@/lib/registry';
+import { BASE_DOMAIN, isValidTelegramUsername, normalizeTelegramUsername } from '@/lib/registry';
 
 const REGISTRY_ADMIN_URL = 'https://domain.takeshi.dev/admin';
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
@@ -48,7 +49,7 @@ export type TelegramSendResult = {
 
 type NewRequestNotification = {
   requestId: string;
-  subdomain: string;
+  hostname: string;
   cnameTarget: string;
   telegramUsername: string;
 };
@@ -387,14 +388,16 @@ export async function consumeTelegramLinkToken(token: string, identity: Telegram
         .where(eq(telegramLinkTokens.id, linkToken.id));
 
       const [domain] = await tx
-        .select({ id: subdomains.id, label: subdomains.label })
+        .select({ id: subdomains.id, label: subdomains.label, parentDomain: managedDomains.hostname })
         .from(subdomains)
+        .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
         .where(and(eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active')))
         .limit(1);
       await tx.insert(dnsEvents).values({
         id: crypto.randomUUID(),
         subdomainId: domain?.id ?? null,
         domainLabel: domain?.label ?? null,
+        parentDomain: domain?.parentDomain ?? BASE_DOMAIN,
         actorType: 'owner',
         action: existingOwnerLink ? 'telegram_link_refreshed' : 'telegram_linked',
         details: { verifiedUsername: identity.linkedUsername !== null },
@@ -722,8 +725,9 @@ export async function unlinkTelegramForOwner(args: {
     }
 
     const [domain] = await tx
-      .select({ id: subdomains.id, label: subdomains.label })
+      .select({ id: subdomains.id, label: subdomains.label, parentDomain: managedDomains.hostname })
       .from(subdomains)
+      .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
       .where(and(eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active')))
       .limit(1);
 
@@ -741,6 +745,7 @@ export async function unlinkTelegramForOwner(args: {
       id: crypto.randomUUID(),
       subdomainId: domain?.id ?? null,
       domainLabel: domain?.label ?? null,
+      parentDomain: domain?.parentDomain ?? BASE_DOMAIN,
       actorType: 'owner',
       action: 'telegram_unlinked',
       details: {
@@ -830,7 +835,7 @@ export async function notifyAdminOfNewRequest(request: NewRequestNotification) {
   return sendAdminTelegramMessage([
     '🟡 TAKESHI DOMAINS · REQUEST MỚI',
     '',
-    `Tên: ${singleLine(request.subdomain)}.takeshi.dev`,
+    `Tên: ${singleLine(request.hostname)}`,
     `CNAME: ${singleLine(request.cnameTarget)}`,
     `Telegram: @${singleLine(request.telegramUsername)}`,
     `Mã request: ${request.requestId.slice(0, 8)}`,

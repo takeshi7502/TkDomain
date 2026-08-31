@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 
 import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
 import { isValidCnameTarget, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername } from '@/lib/registry';
@@ -11,11 +11,15 @@ type SubmissionState =
   | { type: 'error'; message: string }
   | { type: 'success'; requestId: string };
 type AvailabilityState = 'idle' | 'checking' | 'available' | 'taken' | 'error';
-type FieldName = 'subdomain' | 'cnameTarget' | 'telegramUsername' | 'accessKey' | 'rules';
+type FieldName = 'subdomain' | 'parentDomain' | 'cnameTarget' | 'telegramUsername' | 'accessKey' | 'rules';
 type FieldState = { kind: 'idle' | 'valid' | 'invalid'; message: string };
+type RegistryDomain = { id: string; hostname: string };
+
+const defaultRegistryDomain: RegistryDomain = { id: 'managed-domain-takeshi-dev', hostname: 'takeshi.dev' };
 
 const emptyTouched: Record<FieldName, boolean> = {
   subdomain: false,
+  parentDomain: false,
   cnameTarget: false,
   telegramUsername: false,
   accessKey: false,
@@ -38,6 +42,8 @@ function formatRetryAfter(retryAfterSeconds?: number) {
 
 export default function Home() {
   const [subdomain, setSubdomain] = useState('');
+  const [registryDomains, setRegistryDomains] = useState<RegistryDomain[]>([defaultRegistryDomain]);
+  const [parentDomainId, setParentDomainId] = useState(defaultRegistryDomain.id);
   const [cnameTarget, setCnameTarget] = useState('');
   const [telegramUsername, setTelegramUsername] = useState('');
   const [accessKeySuffix, setAccessKeySuffix] = useState('');
@@ -52,6 +58,8 @@ export default function Home() {
   const [serverErrors, setServerErrors] = useState<Partial<Record<FieldName, string>>>({});
 
   const accessKey = `tk-${accessKeySuffix}`;
+  const selectedParentDomain = registryDomains.find((domain) => domain.id === parentDomainId) ?? null;
+  const selectedParentDomainName = selectedParentDomain?.hostname ?? '';
   function withServerError(field: FieldName, state: FieldState): FieldState {
     return serverErrors[field] ? { kind: 'invalid', message: serverErrors[field] } : state;
   }
@@ -71,10 +79,16 @@ export default function Home() {
           : availability === 'taken' || availability === 'error'
             ? { kind: 'invalid', message: availabilityMessage || 'Không thể dùng tên này.' }
             : { kind: 'idle', message: availability === 'checking' ? 'Đang kiểm tra tên...' : 'Rời ô để kiểm tra tên.' }),
+    parentDomain: withServerError('parentDomain', !selectedParentDomain
+      ? { kind: 'invalid', message: 'Hãy chọn một domain đang mở đăng ký.' }
+      : { kind: 'valid', message: `✓ Đăng ký dưới .${selectedParentDomain.hostname}` }),
     cnameTarget: withServerError('cnameTarget', requiredFieldState(
       'cnameTarget',
       Boolean(cnameTarget.trim()),
-      isValidCnameTarget(cnameTarget.trim().toLowerCase().replace(/\.+$/, '')),
+      isValidCnameTarget(
+        cnameTarget.trim().toLowerCase().replace(/\.+$/, ''),
+        registryDomains.map((domain) => domain.hostname),
+      ),
       '✓ CNAME hợp lệ.',
       !cnameTarget.trim() ? 'Nhập CNAME đích.' : 'CNAME cần là hostname hợp lệ, ví dụ your-project.pages.dev.',
     )),
@@ -123,12 +137,58 @@ export default function Home() {
     resetFieldFeedback('subdomain');
   }
 
+  useEffect(() => {
+    let mounted = true;
+
+    void fetch('/api/registry-domains', { cache: 'no-store' })
+      .then(async (response) => {
+        const payload = await response.json() as { domains?: RegistryDomain[] };
+        if (!response.ok || !Array.isArray(payload.domains) || !mounted) return;
+
+        const domains = payload.domains.filter((domain) => (
+          typeof domain.id === 'string' && typeof domain.hostname === 'string'
+        ));
+        setRegistryDomains(domains);
+        setParentDomainId((current) => (
+          domains.some((domain) => domain.id === current) ? current : (domains[0]?.id ?? '')
+        ));
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setRegistryDomains([]);
+        setParentDomainId('');
+      });
+
+    return () => { mounted = false; };
+  }, []);
+
+  function selectParentDomain(value: string) {
+    setParentDomainId(value);
+    setAvailability('idle');
+    setAvailabilityMessage('');
+    setTouched((current) => ({ ...current, parentDomain: true, subdomain: false }));
+    setRequiredOnSubmit((current) => ({ ...current, parentDomain: false, subdomain: false }));
+    setServerErrors((current) => {
+      const next = { ...current };
+      delete next.parentDomain;
+      delete next.subdomain;
+      return next;
+    });
+    setSubmission({ type: 'idle' });
+  }
+
   async function checkAvailability(): Promise<AvailabilityState> {
     markTouched('subdomain');
     if (!subdomain.trim()) {
       setAvailability('idle');
       setAvailabilityMessage('');
       return 'idle';
+    }
+    if (!selectedParentDomain) {
+      markTouched('parentDomain');
+      setAvailability('error');
+      setAvailabilityMessage('Chưa có domain nào đang mở đăng ký.');
+      return 'error';
     }
     if (!isValidSubdomain(subdomain)) {
       setAvailability('error');
@@ -137,12 +197,13 @@ export default function Home() {
     }
 
     const candidate = subdomain;
+    const candidateParentDomainId = selectedParentDomain.id;
     setAvailability('checking');
     setAvailabilityMessage('');
     try {
-      const response = await fetch(`/api/requests?subdomain=${encodeURIComponent(candidate)}`);
+      const response = await fetch(`/api/requests?subdomain=${encodeURIComponent(candidate)}&domainId=${encodeURIComponent(candidateParentDomainId)}`);
       const payload = await response.json() as { available?: boolean; error?: string };
-      if (candidate !== subdomain) return 'idle';
+      if (candidate !== subdomain || candidateParentDomainId !== parentDomainId) return 'idle';
       if (!response.ok) {
         setAvailability('error');
         setAvailabilityMessage(payload.error ?? 'Không thể kiểm tra tên lúc này.');
@@ -153,7 +214,7 @@ export default function Home() {
       setAvailabilityMessage(payload.available ? '✓ Tên có thể dùng.' : 'Tên đã được đăng ký hoặc đang chờ duyệt.');
       return result;
     } catch {
-      if (candidate === subdomain) {
+      if (candidate === subdomain && candidateParentDomainId === parentDomainId) {
         setAvailability('error');
         setAvailabilityMessage('Không thể kết nối registry. Hãy thử lại.');
       }
@@ -174,9 +235,14 @@ export default function Home() {
 
   async function submitClaim(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setTouched({ subdomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
-    setRequiredOnSubmit({ subdomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
-    const localFieldsAreValid = isValidCnameTarget(cnameTarget.trim().toLowerCase().replace(/\.+$/, ''))
+    setTouched({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
+    setRequiredOnSubmit({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
+    const localFieldsAreValid = Boolean(selectedParentDomain)
+      && isValidSubdomain(subdomain)
+      && isValidCnameTarget(
+        cnameTarget.trim().toLowerCase().replace(/\.+$/, ''),
+        registryDomains.map((domain) => domain.hostname),
+      )
       && isValidTelegramUsername(telegramUsername)
       && isValidOwnerAccessKey(accessKey)
       && acceptedRules;
@@ -196,13 +262,14 @@ export default function Home() {
       const response = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subdomain, cnameTarget, telegramUsername, accessKey, acceptedRules, website }),
+        body: JSON.stringify({ subdomain, parentDomainId, cnameTarget, telegramUsername, accessKey, acceptedRules, website }),
       });
-      const payload = await response.json() as { error?: string; field?: FieldName; requestId?: string; retryAfterSeconds?: number };
+      const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId'; requestId?: string; retryAfterSeconds?: number };
       if (!response.ok || !payload.requestId) {
         if (payload.field) {
-          setServerErrors((current) => ({ ...current, [payload.field as FieldName]: payload.error ?? 'Giá trị không hợp lệ.' }));
-          markTouched(payload.field);
+          const field = payload.field === 'parentDomainId' ? 'parentDomain' : payload.field;
+          setServerErrors((current) => ({ ...current, [field]: payload.error ?? 'Giá trị không hợp lệ.' }));
+          markTouched(field);
         }
         const headerRetryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
         const retryAfter = formatRetryAfter(
@@ -241,7 +308,7 @@ export default function Home() {
         <p>Đăng ký subdomain miễn phí cho project, portfolio hoặc trang cá nhân của bạn.</p>
         <div className="hero-name-check">
           <div className="hero-check-row">
-            <div className={inputClass('subdomain', 'field-combo')}><input id="hero-subdomain" aria-label="Kiểm tra subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" /><b>.takeshi.dev</b></div>
+            <div className={inputClass('subdomain', 'field-combo')}><input id="hero-subdomain" aria-label="Kiểm tra subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" /><select className="domain-suffix-select" aria-label="Chọn domain" value={parentDomainId} onChange={(event) => selectParentDomain(event.target.value)} onBlur={() => markTouched('parentDomain')} disabled={registryDomains.length === 0}>{registryDomains.length === 0 ? <option value="">Không có domain</option> : registryDomains.map((domain) => <option key={domain.id} value={domain.id}>.{domain.hostname}</option>)}</select></div>
             <a className="button secondary hero-check-button" href="#request" onClick={(event) => { if (availability !== 'available') { event.preventDefault(); if (availability !== 'checking') void checkAvailability(); } }} aria-disabled={availability === 'checking'}>{heroButtonLabel}</a>
           </div>
           <small aria-live="polite" className={heroStatusClass}>{availability === 'checking' ? 'Đang kiểm tra tên...' : availabilityMessage}</small>
@@ -252,7 +319,7 @@ export default function Home() {
         <form className="panel request-form" noValidate onSubmit={submitClaim}>
           <div className="panel-heading"><span className="block-mark" aria-hidden="true" /><div><p>NEW REQUEST</p><h2>Đăng ký subdomain</h2></div></div>
           <label htmlFor="subdomain">Tên bạn muốn dùng
-            <div className={inputClass('subdomain', 'field-combo')}><input id="subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" required /><b>.takeshi.dev</b></div>
+            <div className={inputClass('subdomain', 'field-combo')}><input id="subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" required /><select className="domain-suffix-select" aria-label="Chọn domain" value={parentDomainId} onChange={(event) => selectParentDomain(event.target.value)} onBlur={() => markTouched('parentDomain')} disabled={registryDomains.length === 0}>{registryDomains.length === 0 ? <option value="">Không có domain</option> : registryDomains.map((domain) => <option key={domain.id} value={domain.id}>.{domain.hostname}</option>)}</select></div>
             {displayHint('subdomain', '3–63 ký tự: a–z, 0–9, dấu gạch ngang. Rời ô để kiểm tra tên.')}
           </label>
           <label htmlFor="cname-target">CNAME đích
@@ -273,7 +340,7 @@ export default function Home() {
           {touched.rules && fieldState.rules.kind !== 'idle' && <small className={fieldState.rules.kind === 'valid' ? 'field-good rules-feedback' : 'field-bad rules-feedback'}>{fieldState.rules.message}</small>}
           <label className="honeypot" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={website} onChange={(event) => setWebsite(event.target.value)} /></label>
           {submission.type === 'error' && <p className="form-message error" role="alert">{submission.message}</p>}
-          {submission.type === 'success' && <p className="form-message success" role="status">Đã nhận yêu cầu cho <strong>{subdomain}.takeshi.dev</strong>. Mã request: {submission.requestId.slice(0, 8)}.</p>}
+          {submission.type === 'success' && <p className="form-message success" role="status">Đã nhận yêu cầu cho <strong>{subdomain}.{selectedParentDomainName}</strong>. Mã request: {submission.requestId.slice(0, 8)}.</p>}
           <button className="button" type="submit" disabled={submission.type === 'loading' || submission.type === 'success'}>{submission.type === 'loading' ? 'Đang gửi...' : submission.type === 'success' ? 'Đã gửi' : 'Gửi yêu cầu'}</button>
         </form>
 

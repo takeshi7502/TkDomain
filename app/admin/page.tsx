@@ -4,11 +4,12 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 
 type RequestStatus = 'pending' | 'active' | 'rejected' | 'cancelled' | 'released';
-type DashboardTab = 'active-subdomains' | 'pending-requests' | 'request-log' | 'dns-log';
+type DashboardTab = 'active-subdomains' | 'pending-requests' | 'request-log' | 'dns-log' | 'domains';
 
 type RequestRecord = {
   id: string;
   subdomain: string;
+  parentDomain: string;
   cnameTarget: string;
   telegramUsername: string | null;
   status: RequestStatus;
@@ -36,6 +37,7 @@ type ActiveSubdomain = {
   id: string;
   requestId: string | null;
   label: string;
+  parentDomain: string;
   status: string;
   createdAt: number;
   updatedAt: number;
@@ -48,6 +50,7 @@ type DnsEvent = {
   id: string;
   subdomainId: string | null;
   domainLabel: string | null;
+  parentDomain: string | null;
   currentDomainLabel: string | null;
   recordId: string | null;
   actorType: string;
@@ -56,23 +59,35 @@ type DnsEvent = {
   createdAt: number;
 };
 
+type ManagedDomain = {
+  id: string;
+  hostname: string;
+  status: 'active' | 'archived' | string;
+  activeCount: number;
+  pendingCount: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 type AdminState = 'idle' | 'loading';
-type DashboardPayload = { error?: string; requests?: RequestRecord[]; activeSubdomains?: ActiveSubdomain[]; dnsEvents?: DnsEvent[] };
+type DashboardPayload = { error?: string; requests?: RequestRecord[]; activeSubdomains?: ActiveSubdomain[]; dnsEvents?: DnsEvent[]; domains?: ManagedDomain[] };
+type DomainMutationPayload = { error?: string; domains?: ManagedDomain[] };
 
 const tabs: Array<{ id: DashboardTab; label: string }> = [
   { id: 'active-subdomains', label: 'Subdomain đang dùng' },
   { id: 'pending-requests', label: 'Chờ duyệt' },
   { id: 'request-log', label: 'Nhật ký yêu cầu' },
   { id: 'dns-log', label: 'Nhật ký DNS' },
+  { id: 'domains', label: 'Domains' },
 ];
 
 function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat('vi-VN', { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
 }
 
-function recordHost(label: string, recordName: string) {
-  return recordName === '@' ? `${label}.takeshi.dev` : `${recordName}.${label}.takeshi.dev`;
+function recordHost(label: string, parentDomain: string, recordName: string) {
+  return recordName === '@' ? `${label}.${parentDomain}` : `${recordName}.${label}.${parentDomain}`;
 }
 
 function ttlLabel(ttl: number) {
@@ -148,6 +163,7 @@ export default function AdminPage() {
   const [requests, setRequests] = useState<RequestRecord[]>([]);
   const [activeSubdomains, setActiveSubdomains] = useState<ActiveSubdomain[]>([]);
   const [dnsEvents, setDnsEvents] = useState<DnsEvent[]>([]);
+  const [domains, setDomains] = useState<ManagedDomain[]>([]);
   const [activeTab, setActiveTab] = useState<DashboardTab>('active-subdomains');
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
   const [state, setState] = useState<AdminState>('idle');
@@ -159,7 +175,11 @@ export default function AdminPage() {
   const [rejectionReason, setRejectionReason] = useState('');
   const [testingTelegram, setTestingTelegram] = useState(false);
   const [configuringTelegramWebhook, setConfiguringTelegramWebhook] = useState(false);
+  const [newDomainHostname, setNewDomainHostname] = useState('');
+  const [addingDomain, setAddingDomain] = useState(false);
+  const [archivingDomainId, setArchivingDomainId] = useState<string | null>(null);
   const polling = useRef(false);
+  const domainActioning = useRef(false);
   const actingOnRef = useRef<string | null>(null);
   const stateRef = useRef<AdminState>('idle');
   const authenticatedRef = useRef(false);
@@ -187,6 +207,7 @@ export default function AdminPage() {
           setRequests([]);
           setActiveSubdomains([]);
           setDnsEvents([]);
+          setDomains([]);
         }
         throw new Error(payload.error ?? 'Không thể tải dữ liệu quản trị.');
       }
@@ -196,6 +217,7 @@ export default function AdminPage() {
       setActiveSubdomains(nextSubdomains);
       setExpandedSubdomainId((current) => nextSubdomains.some((domain) => domain.id === current) ? current : null);
       setDnsEvents(Array.isArray(payload.dnsEvents) ? payload.dnsEvents : []);
+      setDomains(Array.isArray(payload.domains) ? payload.domains : []);
       setDashboardLoaded(true);
     } catch (error) {
       if (!silent) {
@@ -203,6 +225,7 @@ export default function AdminPage() {
         setRequests([]);
         setActiveSubdomains([]);
         setDnsEvents([]);
+        setDomains([]);
         setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể tải dữ liệu quản trị.' });
       }
     } finally {
@@ -233,7 +256,7 @@ export default function AdminPage() {
   useEffect(() => {
     if (!authenticated) return;
     const poll = () => {
-      if (document.visibilityState !== 'visible' || polling.current || actingOnRef.current || stateRef.current !== 'idle') return;
+      if (document.visibilityState !== 'visible' || polling.current || actingOnRef.current || domainActioning.current || stateRef.current !== 'idle') return;
       polling.current = true;
       void loadDashboard({ clearNotice: false, silent: true }).finally(() => { polling.current = false; });
     };
@@ -282,10 +305,14 @@ export default function AdminPage() {
       setRequests([]);
       setActiveSubdomains([]);
       setDnsEvents([]);
+      setDomains([]);
       setAccessKey(null);
       setExpandedSubdomainId(null);
       setRejectingRequestId(null);
       setRejectionReason('');
+      setNewDomainHostname('');
+      setAddingDomain(false);
+      setArchivingDomainId(null);
       setNotice(null);
     } catch (error) {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể đăng xuất phiên admin.' });
@@ -328,6 +355,57 @@ export default function AdminPage() {
       setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể cài webhook Telegram.' });
     } finally {
       setConfiguringTelegramWebhook(false);
+    }
+  }
+
+  async function addDomain(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const hostname = newDomainHostname.trim();
+    if (!hostname || addingDomain || archivingDomainId) return;
+
+    domainActioning.current = true;
+    setAddingDomain(true);
+    setNotice(null);
+    try {
+      const response = await fetch('/api/admin/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostname }),
+      });
+      const payload = await response.json() as DomainMutationPayload;
+      if (!response.ok || !Array.isArray(payload.domains)) throw new Error(payload.error ?? 'Không thể thêm domain vào registry.');
+      setDomains(payload.domains);
+      setNewDomainHostname('');
+      setNotice({ tone: 'success', text: `${hostname} đã sẵn sàng để nhận đăng ký subdomain.` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể thêm domain vào registry.' });
+    } finally {
+      domainActioning.current = false;
+      setAddingDomain(false);
+    }
+  }
+
+  async function archiveDomain(domain: ManagedDomain) {
+    if (domain.status !== 'active' || addingDomain || archivingDomainId) return;
+    const confirmed = window.confirm(
+      `Gỡ ${domain.hostname} khỏi registry?\n\nThao tác này chỉ dừng nhận đăng ký subdomain mới. Cloudflare zone và DNS records không bị xóa. Domain chỉ có thể gỡ khi không còn subdomain active hoặc yêu cầu chờ duyệt.`,
+    );
+    if (!confirmed) return;
+
+    domainActioning.current = true;
+    setArchivingDomainId(domain.id);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/admin/domains?id=${encodeURIComponent(domain.id)}`, { method: 'DELETE' });
+      const payload = await response.json() as DomainMutationPayload;
+      if (!response.ok || !Array.isArray(payload.domains)) throw new Error(payload.error ?? 'Không thể gỡ domain khỏi registry.');
+      setDomains(payload.domains);
+      setNotice({ tone: 'success', text: `${domain.hostname} đã được gỡ khỏi registry. Cloudflare không bị thay đổi.` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể gỡ domain khỏi registry.' });
+    } finally {
+      domainActioning.current = false;
+      setArchivingDomainId(null);
     }
   }
 
@@ -422,7 +500,7 @@ export default function AdminPage() {
     const reasonLength = rejectionReason.trim().length;
     return <article className={`panel admin-list-row${rejectEditorOpen ? ' rejecting' : ''}`} key={request.id}>
       <div className="admin-row-main">
-        <h2 className="admin-row-title">{request.subdomain}<span>.takeshi.dev</span></h2>
+        <h2 className="admin-row-title">{request.subdomain}<span>.{request.parentDomain}</span></h2>
         <div className="admin-row-meta">
           <span title={`CNAME: ${request.cnameTarget}`}><b>CNAME</b>{request.cnameTarget}</span>
           <span><b>Telegram</b>{request.telegramUsername ? `@${request.telegramUsername}` : 'Yêu cầu cũ'}</span>
@@ -470,6 +548,49 @@ export default function AdminPage() {
   function renderDashboard() {
     if (!dashboardLoaded) return <div className="panel empty-state">{sessionChecked ? 'Nhập admin key để tải dashboard.' : 'Đang khôi phục phiên admin...'}</div>;
 
+    if (activeTab === 'domains') {
+      const domainBusy = addingDomain || archivingDomainId !== null;
+      return <>
+        <p className="note">Nhập apex domain đang active trên Cloudflare. Server tự đọc Zone ID bằng token; token cần quyền Zone DNS Edit và Zone Zone Read trên domain đó.</p>
+        <form className="panel admin-key-form" onSubmit={addDomain}>
+          <label htmlFor="new-domain-hostname">Thêm domain gốc
+            <input
+              id="new-domain-hostname"
+              className="field"
+              value={newDomainHostname}
+              onChange={(event) => setNewDomainHostname(event.target.value)}
+              placeholder="example.dev"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={domainBusy}
+              required
+            />
+          </label>
+          <button className="button" type="submit" disabled={domainBusy || !newDomainHostname.trim()}>{addingDomain ? 'Đang thêm...' : 'Thêm domain'}</button>
+        </form>
+        {domains.length === 0
+          ? <div className="panel empty-state">Chưa có domain gốc nào trong registry.</div>
+          : <div className="request-list">{domains.map((domain) => {
+            const isActive = domain.status === 'active';
+            const isArchiving = archivingDomainId === domain.id;
+            return <article className="panel admin-list-row" key={domain.id}>
+              <div className="admin-row-main">
+                <h2 className="admin-row-title">{domain.hostname}</h2>
+                <div className="admin-row-meta">
+                  <span><b>Subdomain active</b>{domain.activeCount}</span>
+                  <span><b>Chờ duyệt</b>{domain.pendingCount}</span>
+                  <span><b>Cập nhật</b>{formatDate(domain.updatedAt)}</span>
+                </div>
+              </div>
+              <div className="admin-row-side">
+                <StatusBadge status={isActive ? 'active' : 'rejected'} label={isActive ? 'Đang nhận đăng ký' : 'Đã gỡ'} />
+                {isActive && <div className="admin-row-actions"><button type="button" className="admin-icon-action danger" onClick={() => void archiveDomain(domain)} disabled={domainBusy} title={isArchiving ? 'Đang gỡ' : `Gỡ ${domain.hostname} khỏi registry`} aria-label={isArchiving ? 'Đang gỡ' : `Gỡ ${domain.hostname} khỏi registry`}>{isArchiving ? '…' : '×'}</button></div>}
+              </div>
+            </article>;
+          })}</div>}
+      </>;
+    }
+
     if (activeTab === 'active-subdomains') {
       return activeSubdomains.length === 0
         ? <div className="panel empty-state">Chưa có subdomain nào đang hoạt động.</div>
@@ -484,9 +605,9 @@ export default function AdminPage() {
                 onClick={() => setExpandedSubdomainId((current) => current === domain.id ? null : domain.id)}
                 aria-expanded={expanded}
                 aria-controls={`admin-records-${domain.id}`}
-                title={expanded ? `Ẩn DNS records của ${domain.label}.takeshi.dev` : `Xem DNS records của ${domain.label}.takeshi.dev`}
+                title={expanded ? `Ẩn DNS records của ${domain.label}.${domain.parentDomain}` : `Xem DNS records của ${domain.label}.${domain.parentDomain}`}
               >
-                <span className="admin-row-title">{domain.label}<span>.takeshi.dev</span></span>
+                <span className="admin-row-title">{domain.label}<span>.{domain.parentDomain}</span></span>
                 <span className="admin-expand-mark" aria-hidden="true">{expanded ? '−' : '+'}</span>
               </button>
               <div className="admin-row-meta">
@@ -497,11 +618,11 @@ export default function AdminPage() {
             </div>
             <div className="admin-row-side">
               <StatusBadge status={domain.status} label={domain.status === 'active' ? 'Đang dùng' : domain.status} />
-              {domain.requestId && <div className="admin-row-actions">{renderAdminAction(domain.requestId, 'reset_access', `Tạo access key mới cho ${domain.label}.takeshi.dev`, '↻')}</div>}
+              {domain.requestId && <div className="admin-row-actions">{renderAdminAction(domain.requestId, 'reset_access', `Tạo access key mới cho ${domain.label}.${domain.parentDomain}`, '↻')}</div>}
             </div>
-            {expanded && <section className="admin-records-inspector" id={`admin-records-${domain.id}`} aria-label={`DNS records của ${domain.label}.takeshi.dev`}>
+            {expanded && <section className="admin-records-inspector" id={`admin-records-${domain.id}`} aria-label={`DNS records của ${domain.label}.${domain.parentDomain}`}>
               <div className="admin-records-heading">
-                <div><p className="eyebrow"><span className="pixel-dot" /> DNS RECORDS</p><p>Toàn bộ record đang thuộc <strong>{domain.label}.takeshi.dev</strong>.</p></div>
+                <div><p className="eyebrow"><span className="pixel-dot" /> DNS RECORDS</p><p>Toàn bộ record đang thuộc <strong>{domain.label}.{domain.parentDomain}</strong>.</p></div>
                 <span className="status">{records.length} records</span>
               </div>
               {records.length === 0
@@ -509,7 +630,7 @@ export default function AdminPage() {
                 : <div className="admin-record-list">{records.map((record) => <article className={`admin-dns-record${record.isPrimary ? ' primary' : ''}`} key={record.id}>
                   <span className="admin-record-type">{record.recordType}</span>
                   <div className="admin-dns-record-main">
-                    <div className="admin-record-host"><strong>{recordHost(domain.label, record.recordName)}</strong>{record.isPrimary && <span>PRIMARY</span>}</div>
+                    <div className="admin-record-host"><strong>{recordHost(domain.label, domain.parentDomain, record.recordName)}</strong>{record.isPrimary && <span>PRIMARY</span>}</div>
                     <code>{record.content}{record.priority !== null ? ` · priority ${record.priority}` : ''}</code>
                     <small>{ttlLabel(record.ttl)}{record.proxied ? ' · proxied' : ' · DNS only'}</small>
                   </div>
@@ -536,9 +657,10 @@ export default function AdminPage() {
       : <div className="request-list">{dnsEvents.map((event) => {
         const domainLabel = event.domainLabel ?? event.currentDomainLabel;
         const details = eventDetailsLabel(event.details);
+        const hostname = domainLabel && event.parentDomain ? `${domainLabel}.${event.parentDomain}` : domainLabel;
         return <article className="panel admin-list-row" key={event.id}>
           <div className="admin-row-main">
-            <h2 className="admin-row-title">{domainLabel ? <>{domainLabel}<span>.takeshi.dev</span></> : 'Subdomain đã xóa'}</h2>
+            <h2 className="admin-row-title">{hostname ? event.parentDomain ? <>{domainLabel}<span>.{event.parentDomain}</span></> : hostname : 'Subdomain đã xóa'}</h2>
             <div className="admin-row-meta">
               <span><b>Thao tác</b>{dnsActionLabel(event.action)}</span>
               <span><b>Lúc</b>{formatDate(event.createdAt)}</span>

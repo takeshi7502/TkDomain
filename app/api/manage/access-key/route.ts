@@ -2,7 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
-import { dnsEvents, owners, ownerSessions, subdomainRequests, subdomains } from '@/db/schema';
+import { dnsEvents, managedDomains, owners, ownerSessions, subdomainRequests, subdomains } from '@/db/schema';
 import {
   clearPendingRequestSessionCookie,
   createOwnerSessionRecord,
@@ -10,7 +10,7 @@ import {
   hashOwnerAccessKey,
   setOwnerSessionCookie,
 } from '@/lib/owner-auth';
-import { isValidOwnerAccessKey } from '@/lib/registry';
+import { BASE_DOMAIN, isValidOwnerAccessKey } from '@/lib/registry';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 
 type RotationResult =
@@ -107,8 +107,9 @@ export async function PATCH(request: NextRequest) {
       if (changed.length === 0) return { type: 'current-key-invalid' };
 
       const [domain] = await tx
-        .select({ id: subdomains.id, label: subdomains.label })
+        .select({ id: subdomains.id, label: subdomains.label, parentDomain: managedDomains.hostname })
         .from(subdomains)
+        .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
         .where(and(eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active')))
         .limit(1);
 
@@ -118,6 +119,7 @@ export async function PATCH(request: NextRequest) {
         id: crypto.randomUUID(),
         subdomainId: domain?.id ?? null,
         domainLabel: domain?.label ?? null,
+        parentDomain: domain?.parentDomain ?? BASE_DOMAIN,
         actorType: 'owner',
         action: 'owner_access_key_changed',
         details: { invalidatedSessions: true },

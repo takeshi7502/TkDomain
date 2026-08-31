@@ -1,7 +1,8 @@
 # Takeshi Domains
 
-`domain.takeshi.dev` là cổng đăng ký CNAME-only cho các subdomain dạng
-`ten.takeshi.dev`.
+`domain.takeshi.dev` là cổng đăng ký CNAME-only. Giao diện vẫn mang thương hiệu
+Takeshi Domains, còn admin có thể mở thêm các parent domain (ví dụ
+`ten.example.dev`) từ tab **Domains**.
 
 ## Cách hoạt động
 
@@ -9,7 +10,8 @@
 2. Họ gửi tên subdomain, CNAME đích, GitHub và email.
 3. Yêu cầu được lưu ở trạng thái `pending`.
 4. Admin duyệt yêu cầu. Nếu DNS automation đã được cấu hình, app tạo CNAME
-   DNS-only trong zone `takeshi.dev` và chuyển request thành `active`.
+   DNS-only trong đúng Cloudflare zone mà người dùng đã chọn và chuyển request
+   thành `active`.
 
 ## Hạ tầng
 
@@ -24,8 +26,8 @@ Vercel Project Settings → Environment Variables:
 
 ```text
 REGISTRY_ADMIN_KEY=<chuỗi ngẫu nhiên dài>
-CLOUDFLARE_API_TOKEN=<Cloudflare API token, chỉ Zone / DNS / Edit>
-CLOUDFLARE_ZONE_ID=<Zone ID của takeshi.dev>
+CLOUDFLARE_API_TOKEN=<token có Zone / DNS / Edit + Zone / Zone / Read trên mọi zone registry quản lý>
+CLOUDFLARE_ZONE_ID=<Zone ID takeshi.dev, chỉ dùng seed/fallback khi migrate>
 TELEGRAM_BOT_TOKEN=<token từ BotFather>
 TELEGRAM_ADMIN_CHAT_ID=<chat ID của admin, nếu dùng thông báo admin>
 TELEGRAM_BOT_USERNAME=<username bot, không có @; tùy chọn>
@@ -33,9 +35,22 @@ TELEGRAM_WEBHOOK_SECRET=<random-secret-32-plus-chars>
 REGISTRY_PUBLIC_URL=https://domain.takeshi.dev
 ```
 
-`CLOUDFLARE_API_TOKEN` và `CLOUDFLARE_ZONE_ID` là tùy chọn: khi chưa có chúng,
-nút duyệt DNS sẽ trả về thông báo rằng DNS provisioning chưa được cấu hình.
+`CLOUDFLARE_API_TOKEN` là secret dùng chung cho các zone mà registry quản lý.
+Tạo **API Token** (không dùng Global API Key) với hai quyền `Zone > DNS > Edit`
+và `Zone > Zone > Read`; scope token tới tất cả các zone sẽ thêm vào registry.
+`CLOUDFLARE_ZONE_ID` chỉ giúp tự seed `takeshi.dev` tương thích với dữ liệu cũ;
+các domain thêm sau đó tự được tra Zone ID và lưu ID không bí mật trong database.
 Không bao giờ commit secret vào Git.
+
+## Nhiều domain
+
+Đăng nhập `/admin`, mở tab **Domains**, nhập apex domain (ví dụ `example.dev`)
+rồi bấm thêm. Server tự kiểm tra chính xác zone active bằng Cloudflare trước khi
+lưu; người dùng chỉ nhìn thấy những domain đang `active` trong dropdown đăng ký.
+
+Nút gỡ chỉ **archive** domain khỏi registry, không hề xóa Cloudflare zone. Vì
+vậy nó bị chặn nếu domain còn subdomain active hoặc request pending; hãy xử lý
+những mục đó trước để không làm mất quyền quản lý DNS hay audit log.
 
 ## Telegram bot (tùy chọn nhưng khuyến nghị)
 
@@ -62,6 +77,9 @@ Admin API cần header `x-registry-admin-key`:
 ```text
 GET   /api/admin/requests
 PATCH /api/admin/requests
+GET   /api/admin/domains
+POST  /api/admin/domains
+DELETE /api/admin/domains?id=<domain-id>
 ```
 
 Ví dụ duyệt request:

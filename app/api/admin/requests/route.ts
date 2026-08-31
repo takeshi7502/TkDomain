@@ -1,13 +1,12 @@
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
-import { dnsEvents, dnsRecords, owners, ownerSessions, subdomains, subdomainRequests } from '@/db/schema';
+import { dnsEvents, dnsRecords, managedDomains, owners, ownerSessions, subdomains, subdomainRequests } from '@/db/schema';
 import { createCloudflareRecord, deleteCloudflareRecord, findCloudflareRecordByComment } from '@/lib/cloudflare';
 import { isAdminAuthorized } from '@/lib/admin-auth';
 import { fullRecordName, type ValidatedDnsRecord } from '@/lib/dns';
 import { createOwnerAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
-import { BASE_DOMAIN } from '@/lib/registry';
 
 const REVIEW_LEASE_MS = 10 * 60_000;
 
@@ -35,13 +34,18 @@ export async function GET(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   await ensureRegistrySchema();
   const db = getDb();
-  const [requests, activeRows, eventRows] = await Promise.all([
-    db.select().from(subdomainRequests).orderBy(desc(subdomainRequests.createdAt)).limit(500),
+  const [requestRows, activeRows, eventRows, registryDomains, subdomainCounts, pendingCounts] = await Promise.all([
+    db.select({ request: subdomainRequests, parentDomain: managedDomains.hostname })
+      .from(subdomainRequests)
+      .innerJoin(managedDomains, eq(subdomainRequests.parentDomainId, managedDomains.id))
+      .orderBy(desc(subdomainRequests.createdAt))
+      .limit(500),
     db
       .select({
         id: subdomains.id,
         requestId: subdomains.requestId,
         label: subdomains.label,
+        parentDomain: managedDomains.hostname,
         status: subdomains.status,
         createdAt: subdomains.createdAt,
         updatedAt: subdomains.updatedAt,
@@ -49,6 +53,7 @@ export async function GET(request: NextRequest) {
       })
       .from(subdomains)
       .innerJoin(owners, eq(subdomains.ownerId, owners.id))
+      .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
       .where(eq(subdomains.status, 'active'))
       .orderBy(desc(subdomains.updatedAt)),
     db
@@ -56,6 +61,7 @@ export async function GET(request: NextRequest) {
         id: dnsEvents.id,
         subdomainId: dnsEvents.subdomainId,
         domainLabel: dnsEvents.domainLabel,
+        parentDomain: dnsEvents.parentDomain,
         currentDomainLabel: subdomains.label,
         recordId: dnsEvents.recordId,
         actorType: dnsEvents.actorType,
@@ -67,6 +73,15 @@ export async function GET(request: NextRequest) {
       .leftJoin(subdomains, eq(dnsEvents.subdomainId, subdomains.id))
       .orderBy(desc(dnsEvents.createdAt))
       .limit(300),
+    db.select().from(managedDomains).orderBy(asc(managedDomains.hostname)),
+    db.select({ parentDomainId: subdomains.parentDomainId, value: count() })
+      .from(subdomains)
+      .where(eq(subdomains.status, 'active'))
+      .groupBy(subdomains.parentDomainId),
+    db.select({ parentDomainId: subdomainRequests.parentDomainId, value: count() })
+      .from(subdomainRequests)
+      .where(eq(subdomainRequests.status, 'pending'))
+      .groupBy(subdomainRequests.parentDomainId),
   ]);
 
   const domainIds = activeRows.map((domain) => domain.id);
@@ -98,15 +113,26 @@ export async function GET(request: NextRequest) {
     records.push(recordForDashboard);
     recordsBySubdomain.set(subdomainId, records);
   }
+  const activeCounts = new Map(subdomainCounts.map((row) => [row.parentDomainId, Number(row.value)]));
+  const pendingByDomain = new Map(pendingCounts.map((row) => [row.parentDomainId, Number(row.value)]));
 
   return NextResponse.json({
-    requests,
+    requests: requestRows.map(({ request: requestRecord, parentDomain }) => ({ ...requestRecord, parentDomain })),
     activeSubdomains: activeRows.map((domain) => ({
       ...domain,
       recordCount: recordCounts.get(domain.id) ?? 0,
       records: recordsBySubdomain.get(domain.id) ?? [],
     })),
     dnsEvents: eventRows,
+    domains: registryDomains.map((domain) => ({
+      id: domain.id,
+      hostname: domain.hostname,
+      status: domain.status,
+      activeCount: activeCounts.get(domain.id) ?? 0,
+      pendingCount: pendingByDomain.get(domain.id) ?? 0,
+      createdAt: domain.createdAt,
+      updatedAt: domain.updatedAt,
+    })),
   });
 }
 
@@ -122,8 +148,15 @@ export async function PATCH(request: NextRequest) {
 
   if (body.action === 'reset_access') {
     if (requestRecord.status !== 'active') return NextResponse.json({ error: 'Chỉ subdomain đang active mới có access key.' }, { status: 409 });
-    const subdomain = await db.query.subdomains.findFirst({ where: eq(subdomains.label, requestRecord.subdomain) });
-    if (!subdomain) return NextResponse.json({ error: 'Subdomain chưa được đồng bộ vào panel. Hãy thử lại.' }, { status: 409 });
+    const rows = await db
+      .select({ subdomain: subdomains, parentDomain: managedDomains.hostname })
+      .from(subdomains)
+      .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
+      .where(eq(subdomains.requestId, requestRecord.id))
+      .limit(1);
+    const current = rows[0];
+    if (!current) return NextResponse.json({ error: 'Subdomain chưa được đồng bộ vào panel. Hãy thử lại.' }, { status: 409 });
+    const subdomain = current.subdomain;
     const accessKey = createOwnerAccessKey();
     const now = Date.now();
     await db.update(owners).set({ accessKeyHash: hashOwnerAccessKey(accessKey), updatedAt: now }).where(eq(owners.id, subdomain.ownerId));
@@ -132,12 +165,13 @@ export async function PATCH(request: NextRequest) {
       id: crypto.randomUUID(),
       subdomainId: subdomain.id,
       domainLabel: subdomain.label,
+      parentDomain: current.parentDomain,
       actorType: 'admin',
       action: 'owner_key_reset',
-      details: { hostname: `${subdomain.label}.${BASE_DOMAIN}` },
+      details: { hostname: `${subdomain.label}.${current.parentDomain}` },
       createdAt: now,
     });
-    return NextResponse.json({ ok: true, status: 'active', ownerAccessKey: accessKey, subdomain: `${subdomain.label}.${BASE_DOMAIN}` });
+    return NextResponse.json({ ok: true, status: 'active', ownerAccessKey: accessKey, subdomain: `${subdomain.label}.${current.parentDomain}` });
   }
 
   const now = Date.now();
@@ -190,16 +224,34 @@ export async function PATCH(request: NextRequest) {
     }
   }
 
+  const parentDomain = await db.query.managedDomains.findFirst({
+    where: eq(managedDomains.id, claimedRequest.parentDomainId),
+  });
+  if (!parentDomain || parentDomain.status !== 'active' || !parentDomain.cloudflareZoneId) {
+    await db.update(subdomainRequests).set({ reviewStartedAt: null }).where(eq(subdomainRequests.id, claimedRequest.id));
+    return NextResponse.json({ error: 'Domain gốc này không còn active hoặc chưa có Cloudflare zone ID. Kiểm tra tab Domains trước khi duyệt.' }, { status: 409 });
+  }
+
   const initialRecord: ValidatedDnsRecord = { recordType: 'CNAME', recordName: '@', content: claimedRequest.cnameTarget, ttl: 1, proxied: false, priority: null };
   const cloudflareComment = `Takeshi Domains request ${claimedRequest.id}`;
   let cloudflareRecordId: string;
   let cloudflareRecordCreatedHere = false;
   try {
-    const existingRecordId = await findCloudflareRecordByComment(fullRecordName(claimedRequest.subdomain, '@'), initialRecord, cloudflareComment);
+    const existingRecordId = await findCloudflareRecordByComment(
+      fullRecordName(claimedRequest.subdomain, '@', parentDomain.hostname),
+      initialRecord,
+      cloudflareComment,
+      parentDomain.cloudflareZoneId,
+    );
     if (existingRecordId) {
       cloudflareRecordId = existingRecordId;
     } else {
-      cloudflareRecordId = await createCloudflareRecord(fullRecordName(claimedRequest.subdomain, '@'), initialRecord, cloudflareComment);
+      cloudflareRecordId = await createCloudflareRecord(
+        fullRecordName(claimedRequest.subdomain, '@', parentDomain.hostname),
+        initialRecord,
+        cloudflareComment,
+        parentDomain.cloudflareZoneId,
+      );
       cloudflareRecordCreatedHere = true;
     }
   } catch (error) {
@@ -250,7 +302,16 @@ export async function PATCH(request: NextRequest) {
       }
 
       const subdomainId = crypto.randomUUID();
-      await tx.insert(subdomains).values({ id: subdomainId, label: claimedRequest.subdomain, ownerId: owner.id, status: 'active', requestId: claimedRequest.id, createdAt: now, updatedAt: now });
+      await tx.insert(subdomains).values({
+        id: subdomainId,
+        label: claimedRequest.subdomain,
+        parentDomainId: parentDomain.id,
+        ownerId: owner.id,
+        status: 'active',
+        requestId: claimedRequest.id,
+        createdAt: now,
+        updatedAt: now,
+      });
       const dnsRecordId = crypto.randomUUID();
       await tx.insert(dnsRecords).values({
         id: dnsRecordId,
@@ -270,6 +331,7 @@ export async function PATCH(request: NextRequest) {
         id: crypto.randomUUID(),
         subdomainId,
         domainLabel: claimedRequest.subdomain,
+        parentDomain: parentDomain.hostname,
         recordId: dnsRecordId,
         actorType: 'admin',
         action: 'primary_record_created',
@@ -287,7 +349,7 @@ export async function PATCH(request: NextRequest) {
     });
   } catch (error) {
     if (cloudflareRecordCreatedHere) {
-      try { await deleteCloudflareRecord(cloudflareRecordId); } catch { /* The request stays pending so admin can recover it manually. */ }
+      try { await deleteCloudflareRecord(cloudflareRecordId, parentDomain.cloudflareZoneId); } catch { /* The request stays pending so admin can recover it manually. */ }
     }
     await db.update(subdomainRequests).set({ reviewStartedAt: null }).where(eq(subdomainRequests.id, claimedRequest.id));
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Không thể tạo owner cho request này.' }, { status: 409 });
@@ -299,6 +361,6 @@ export async function PATCH(request: NextRequest) {
     recordId: cloudflareRecordId,
     ownerAccessKey: accessKey,
     accessKeyProvided: Boolean(claimedRequest.requestedAccessKeyHash),
-    subdomain: `${claimedRequest.subdomain}.${BASE_DOMAIN}`,
+    subdomain: `${claimedRequest.subdomain}.${parentDomain.hostname}`,
   });
 }

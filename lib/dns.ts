@@ -33,8 +33,8 @@ function isValidHostname(value: string) {
   return labels.length >= 2 && labels.every((label) => /^(?=.{1,63}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
 }
 
-export function fullRecordName(label: string, recordName: string) {
-  const host = `${label}.${BASE_DOMAIN}`;
+export function fullRecordName(label: string, recordName: string, parentDomain = BASE_DOMAIN) {
+  const host = `${label}.${parentDomain}`;
   return recordName === '@' ? host : `${recordName}.${host}`;
 }
 

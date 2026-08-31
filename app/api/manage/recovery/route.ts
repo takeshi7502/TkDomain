@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureRegistrySchema, getDb } from '@/db';
 import {
   dnsEvents,
+  managedDomains,
   owners,
   ownerSessions,
   subdomainRequests,
@@ -17,7 +18,7 @@ import {
   hashOwnerAccessKey,
   setOwnerSessionCookie,
 } from '@/lib/owner-auth';
-import { isValidOwnerAccessKey } from '@/lib/registry';
+import { BASE_DOMAIN, isValidOwnerAccessKey } from '@/lib/registry';
 import { enforceRegistryRateLimit, enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 import {
   findTelegramLinkedOwner,
@@ -221,8 +222,9 @@ export async function POST(request: NextRequest) {
       if (updated.length === 0) return 'invalid-grant';
 
       const [domain] = await tx
-        .select({ id: subdomains.id, label: subdomains.label })
+        .select({ id: subdomains.id, label: subdomains.label, parentDomain: managedDomains.hostname })
         .from(subdomains)
+        .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
         .where(and(eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active')))
         .limit(1);
 
@@ -235,6 +237,7 @@ export async function POST(request: NextRequest) {
         id: crypto.randomUUID(),
         subdomainId: domain?.id ?? null,
         domainLabel: domain?.label ?? null,
+        parentDomain: domain?.parentDomain ?? BASE_DOMAIN,
         actorType: 'owner',
         action: 'owner_access_key_recovered',
         details: { via: 'verified_telegram', invalidatedSessions: true },

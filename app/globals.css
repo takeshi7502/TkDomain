@@ -4,7 +4,7 @@
 * { box-sizing: border-box; }
 html { overflow-x: clip; overflow-y: scroll; scroll-behavior: smooth; scrollbar-width: thin; scrollbar-color: #708a38 #0d110b; scrollbar-gutter: stable; background: var(--bg); }
 body { min-width: 320px; margin: 0; color: var(--text); background: var(--bg); font-family: var(--font-mono), monospace; }
-button, input { font: inherit; } button { cursor: pointer; }
+button, input, select { font: inherit; } button { cursor: pointer; }
 a { color: inherit; }
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-track { background: #0d110b; }
@@ -49,6 +49,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 .hero-check-row { display: flex; align-items: stretch; gap: 10px; }
 .hero-name-check .field-combo { flex: 1; }
 .hero-check-button { flex: 0 0 auto; white-space: nowrap; }
+.domain-suffix-select { flex: 0 1 190px; min-width: 108px; border: 0; outline: 0; padding: 3px 17px 3px 8px; color: var(--muted); background: transparent; color-scheme: dark; font-size: 11px; font-weight: 700; text-align: right; text-overflow: ellipsis; }
+.domain-suffix-select:focus { color: var(--lime); }
+.domain-suffix-select:disabled { color: #65705d; }
 
 .record-editor, .records-panel { padding: 18px; }
 .record-editor .panel-heading { padding-bottom: 14px; margin-bottom: 15px; }
@@ -86,6 +89,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 @media (max-width: 700px) {
   .hero-check-row { display: block; }
   .hero-check-button { width: 100%; margin-top: 10px; }
+  .domain-suffix-select { flex-basis: 150px; max-width: 55%; font-size: 10px; }
   .primary-record-summary { grid-template-columns: 36px minmax(0, 1fr) auto; }
 }
 
