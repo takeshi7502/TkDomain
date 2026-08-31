@@ -3,6 +3,7 @@
 import { FocusEvent, FormEvent, useEffect, useState } from 'react';
 
 import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
+import { useToast } from '@/app/components/ToastProvider';
 import { UserLanguageToggle, useUserLanguage } from '@/app/components/UserLanguageToggle';
 import { isValidCnameTarget, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername } from '@/lib/registry';
 
@@ -97,6 +98,7 @@ function formatRetryAfter(retryAfterSeconds: number | undefined, language: 'vi' 
 
 export default function Home() {
   const { language, setLanguage } = useUserLanguage();
+  const { pushToast } = useToast();
   const [subdomain, setSubdomain] = useState('');
   const [registryDomains, setRegistryDomains] = useState<RegistryDomain[]>([defaultRegistryDomain]);
   const [parentDomainId, setParentDomainId] = useState(defaultRegistryDomain.id);
@@ -117,6 +119,23 @@ export default function Home() {
   const selectedParentDomain = registryDomains.find((domain) => domain.id === parentDomainId) ?? null;
   const selectedParentDomainName = selectedParentDomain?.hostname ?? '';
   const t = <T,>(vi: T, en: T): T => language === 'en' ? en : vi;
+
+  useEffect(() => {
+    if (submission.type === 'error') {
+      pushToast({ tone: 'error', text: submission.message });
+      return;
+    }
+    if (submission.type === 'success') {
+      const hostname = selectedParentDomainName ? `${subdomain}.${selectedParentDomainName}` : subdomain;
+      pushToast({
+        tone: 'success',
+        text: language === 'en'
+          ? `Request received for ${hostname}. Request ID: ${submission.requestId.slice(0, 8)}.`
+          : `Đã nhận yêu cầu cho ${hostname}. Mã request: ${submission.requestId.slice(0, 8)}.`,
+      });
+    }
+  }, [language, pushToast, selectedParentDomainName, subdomain, submission]);
+
   function withServerError(field: FieldName, state: FieldState): FieldState {
     return serverErrors[field] ? { kind: 'invalid', message: serverErrors[field] } : state;
   }
@@ -397,8 +416,6 @@ export default function Home() {
           <label className="check-row" htmlFor="rules"><input id="rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>{t('Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.', 'I agree to use this subdomain appropriately and follow the rules.')}</span></label>
           {touched.rules && fieldState.rules.kind !== 'idle' && <small className={fieldState.rules.kind === 'valid' ? 'field-good rules-feedback' : 'field-bad rules-feedback'}>{fieldState.rules.message}</small>}
           <label className="honeypot" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={website} onChange={(event) => setWebsite(event.target.value)} /></label>
-          {submission.type === 'error' && <p className="form-message error" role="alert">{submission.message}</p>}
-          {submission.type === 'success' && <p className="form-message success" role="status">{t('Đã nhận yêu cầu cho', 'Request received for')} <strong>{subdomain}.{selectedParentDomainName}</strong>. {t('Mã request:', 'Request ID:')} {submission.requestId.slice(0, 8)}.</p>}
           <button className="button" type="submit" disabled={submission.type === 'loading' || submission.type === 'success'}>{submission.type === 'loading' ? t('Đang gửi...', 'Sending...') : submission.type === 'success' ? t('Đã gửi', 'Sent') : t('Gửi yêu cầu', 'Send request')}</button>
         </form>
 

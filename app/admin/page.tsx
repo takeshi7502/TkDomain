@@ -3,6 +3,8 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 
+import { useNoticeToast } from '@/app/components/ToastProvider';
+
 type RequestStatus = 'pending' | 'active' | 'rejected' | 'cancelled' | 'released';
 type DashboardTab = 'active-subdomains' | 'pending-requests' | 'request-log' | 'dns-log' | 'domains';
 
@@ -168,6 +170,7 @@ export default function AdminPage() {
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
   const [state, setState] = useState<AdminState>('idle');
   const [notice, setNotice] = useState<Notice>(null);
+  useNoticeToast(notice);
   const [accessKey, setAccessKey] = useState<{ subdomain: string; value: string } | null>(null);
   const [actingOn, setActingOn] = useState<string | null>(null);
   const [expandedSubdomainId, setExpandedSubdomainId] = useState<string | null>(null);
@@ -681,7 +684,6 @@ export default function AdminPage() {
           <label htmlFor="admin-key">Registry admin key<input id="admin-key" className="field" type="password" value={key} onChange={(event) => { setKey(event.target.value); setDashboardLoaded(false); }} autoComplete="off" required /></label>
           <button type="submit" className="button" disabled={state === 'loading'}>{state === 'loading' ? 'Đang mở...' : 'Mở dashboard'}</button>
         </form>}
-        {notice && <p className={`form-message ${notice.tone} admin-message`} role={notice.tone === 'error' ? 'alert' : 'status'}>{notice.text}</p>}
         {authenticated && accessKey && <section className="panel owner-key-panel"><p className="eyebrow"><span className="pixel-dot" /> OWNER ACCESS KEY</p><h2>{accessKey.subdomain}</h2><code>{accessKey.value}</code><p className="note">Gửi key này qua kênh riêng. Tạo key mới sẽ hủy các phiên panel cũ.</p><button type="button" className="text-button" onClick={() => setAccessKey(null)}>Đã sao chép</button></section>}
         {authenticated && dashboardLoaded && <nav className="admin-tabs" role="tablist" aria-label="Dashboard quản trị">{tabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'button' : 'button secondary-action'} onClick={() => setActiveTab(tab.id)}>{tab.label}{tab.id === 'pending-requests' && pendingRequests.length > 0 ? ` (${pendingRequests.length})` : ''}</button>)}</nav>}
         {(authenticated || !sessionChecked) && <section className="admin-tab-panel" role="tabpanel">{renderDashboard()}</section>}
