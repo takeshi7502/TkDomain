@@ -432,7 +432,7 @@ export default function Home() {
             <input id="notification-email" className={inputClass('notificationEmail')} type="email" inputMode="email" autoComplete="email" maxLength={254} placeholder="you@example.com" value={notificationEmail}
               aria-invalid={touched.notificationEmail && fieldState.notificationEmail.kind === 'invalid'} aria-describedby="notification-email-hint"
               onChange={(event) => { setNotificationEmail(event.target.value); resetFieldFeedback('notificationEmail'); }} onBlur={() => markTouched('notificationEmail')} required />
-            <div id="notification-email-hint">{displayHint('notificationEmail', t('Bắt buộc · nhận thư xác nhận ngay và một thư khác sau khi được duyệt.', 'Required · receive a confirmation now and another email after approval.'))}</div>
+            <div id="notification-email-hint">{displayHint('notificationEmail', t('Nhận thư xác nhận sau khi được duyệt.', 'Required · receive a confirmation now and another email after approval.'))}</div>
           </label>
           <label className="check-row" htmlFor="accepted-rules"><input id="accepted-rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>{t('Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.', 'I agree to use this subdomain appropriately and follow the rules.')}</span></label>
           {touched.rules && fieldState.rules.kind === 'invalid' && <small className="field-bad rules-feedback">{fieldState.rules.message}</small>}
