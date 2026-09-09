@@ -305,5 +305,5 @@ footer a { color: #a9c972; font-weight: 700; text-decoration: none; } footer a:h
 
 /* A drawn chevron avoids the vertical baseline offset of the previous text glyph. */
 .domain-suffix-trigger i, .record-type-select i { display: block; width: 7px; height: 7px; border: solid currentColor; border-width: 0 2px 2px 0; font-size: 0; line-height: 0; pointer-events: none; }
-.domain-suffix-trigger i { flex: 0 0 7px; margin-top: -3px; color: #d7ee91; transform: rotate(45deg); }
-.record-type-select i { top: calc(50% + 2px); right: 14px; bottom: auto; color: var(--lime); transform: translateY(-50%) rotate(45deg); }
+.domain-suffix-trigger i { flex: 0 0 7px; margin-top: 0; color: #d7ee91; transform: rotate(45deg); }
+.record-type-select i { top: calc(50% + 4px); right: 14px; bottom: auto; color: var(--lime); transform: translateY(-50%) rotate(45deg); }
