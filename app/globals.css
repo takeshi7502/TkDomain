@@ -289,3 +289,16 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 @media (max-width: 700px) {
   .registration-record-fields, .registration-record-fields.has-priority { grid-template-columns: 1fr; gap: 0; }
 }
+
+/* Public header and custom controls: stable spacing regardless of browser glyph metrics. */
+.telegram-link { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; border: 1px solid #526641; padding: 0 10px; color: #c9d9a8 !important; background: #151b12; box-shadow: 2px 2px 0 #090c08; font-weight: 800; transition: transform 150ms ease, border-color 150ms ease, color 150ms ease, background 150ms ease; }
+.telegram-link:hover { border-color: #90ae4e; color: #172010 !important; background: #a7c95e; transform: translateY(-1px); }
+.domain-suffix-trigger i { display: inline-grid; flex: 0 0 15px; width: 15px; height: 15px; place-items: center; font: 800 13px/1 var(--font-mono), monospace; transform: none; }
+.domain-suffix-menu { width: max-content; min-width: 100%; }
+.domain-suffix-menu button { padding: 0 6px; }
+.record-type-select i { top: calc(50% + 4px); bottom: auto; transform: translateY(-50%); }
+footer a { color: #a9c972; font-weight: 700; text-decoration: none; } footer a:hover { color: #d7ee91; text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 700px) {
+  .telegram-link { min-height: 28px; padding: 0 8px; font-size: 9px !important; }
+}

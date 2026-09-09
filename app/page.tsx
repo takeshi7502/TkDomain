@@ -104,7 +104,7 @@ export default function Home() {
   const [subdomain, setSubdomain] = useState('');
   const [registryDomains, setRegistryDomains] = useState<RegistryDomain[]>([defaultRegistryDomain]);
   const [parentDomainId, setParentDomainId] = useState(defaultRegistryDomain.id);
-  const [recordType, setRecordType] = useState<RegistrationRecordType>('CNAME');
+  const [recordType, setRecordType] = useState<RegistrationRecordType>('A');
   const [recordContent, setRecordContent] = useState('');
   const [recordPriority, setRecordPriority] = useState('');
   const [telegramUsername, setTelegramUsername] = useState('');
@@ -417,7 +417,7 @@ export default function Home() {
           <span className="brand-block" aria-hidden="true"><i /><i /><i /><i /></span>
           <span>TAKESHI <span className="brand-dim">DOMAINS</span></span>
         </a>
-        <nav className="site-nav" aria-label={t('Điều hướng chính', 'Main navigation')}><a href="#request">{t('Đăng ký', 'Register')}</a><a href="#how">{t('Cách hoạt động', 'How it works')}</a><a href="#rules">{t('Quy định', 'Rules')}</a><a className="dns-panel-link" href="/manage">DNS Panel</a><UserLanguageToggle language={language} onChange={setLanguage} /></nav>
+        <nav className="site-nav" aria-label={t('Điều hướng chính', 'Main navigation')}><a className="telegram-link" href="https://t.me/jinmups_vn" target="_blank" rel="noreferrer">Telegram</a><a className="dns-panel-link" href="/manage">DNS Panel</a><UserLanguageToggle language={language} onChange={setLanguage} /></nav>
       </header>
 
       <section className="hero" id="top">
@@ -483,7 +483,7 @@ export default function Home() {
         </aside>
       </section>
 
-      <footer><span>TAKESHI DOMAINS</span><span>{t('Duyệt thủ công · DNS Panel sau khi được duyệt', 'Manual review · DNS Panel after approval')}</span><span>© 2026</span></footer>
+      <footer><span>TAKESHI DOMAINS</span><span>{t('Subdomain miễn phí · Dành cho project, portfolio và trang cá nhân', 'Free subdomains · For projects, portfolios, and personal sites')}</span><span>by <a href="https://takeshi.dev" target="_blank" rel="noreferrer">takeshi.dev</a> · © 2026</span></footer>
     </main>
   );
 }
