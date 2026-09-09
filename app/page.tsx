@@ -5,7 +5,7 @@ import { FocusEvent, FormEvent, useEffect, useState } from 'react';
 import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
 import { useToast } from '@/app/components/ToastProvider';
 import { UserLanguageToggle, useUserLanguage } from '@/app/components/UserLanguageToggle';
-import { isValidCnameTarget, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername } from '@/lib/registry';
+import { isValidCnameTarget, isValidNotificationEmail, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername } from '@/lib/registry';
 
 type SubmissionState =
   | { type: 'idle' }
@@ -13,7 +13,7 @@ type SubmissionState =
   | { type: 'error'; message: string }
   | { type: 'success'; requestId: string };
 type AvailabilityState = 'idle' | 'checking' | 'available' | 'taken' | 'error';
-type FieldName = 'subdomain' | 'parentDomain' | 'cnameTarget' | 'telegramUsername' | 'accessKey' | 'rules';
+type FieldName = 'subdomain' | 'parentDomain' | 'cnameTarget' | 'telegramUsername' | 'notificationEmail' | 'accessKey' | 'rules';
 type FieldState = { kind: 'idle' | 'valid' | 'invalid'; message: string };
 type RegistryDomain = { id: string; hostname: string };
 
@@ -77,6 +77,7 @@ const emptyTouched: Record<FieldName, boolean> = {
   parentDomain: false,
   cnameTarget: false,
   telegramUsername: false,
+  notificationEmail: false,
   accessKey: false,
   rules: false,
 };
@@ -104,6 +105,7 @@ export default function Home() {
   const [parentDomainId, setParentDomainId] = useState(defaultRegistryDomain.id);
   const [cnameTarget, setCnameTarget] = useState('');
   const [telegramUsername, setTelegramUsername] = useState('');
+  const [notificationEmail, setNotificationEmail] = useState('');
   const [accessKeySuffix, setAccessKeySuffix] = useState('');
   const [showAccessKey, setShowAccessKey] = useState(false);
   const [acceptedRules, setAcceptedRules] = useState(false);
@@ -130,11 +132,11 @@ export default function Home() {
       pushToast({
         tone: 'success',
         text: language === 'en'
-          ? `Request received for ${hostname}. Request ID: ${submission.requestId.slice(0, 8)}.`
-          : `Đã nhận yêu cầu cho ${hostname}. Mã request: ${submission.requestId.slice(0, 8)}.`,
+          ? `Request received for ${hostname}. Request ID: ${submission.requestId.slice(0, 8)}.${notificationEmail.trim() ? ' We will email you after approval.' : ''}`
+          : `Đã nhận yêu cầu cho ${hostname}. Mã request: ${submission.requestId.slice(0, 8)}.${notificationEmail.trim() ? ' Email sẽ được gửi sau khi admin duyệt.' : ''}`,
       });
     }
-  }, [language, pushToast, selectedParentDomainName, subdomain, submission]);
+  }, [language, notificationEmail, pushToast, selectedParentDomainName, subdomain, submission]);
 
   function withServerError(field: FieldName, state: FieldState): FieldState {
     return serverErrors[field] ? { kind: 'invalid', message: serverErrors[field] } : state;
@@ -175,6 +177,11 @@ export default function Home() {
       t('✓ Telegram username hợp lệ.', '✓ Valid Telegram username.'),
       !telegramUsername.trim() ? t('Nhập Telegram username.', 'Enter your Telegram username.') : t('Username Telegram dài 5–32 ký tự, bắt đầu bằng chữ và chỉ dùng chữ, số, _.', 'Use 5–32 characters, beginning with a letter; letters, numbers, and _ only.'),
     )),
+    notificationEmail: withServerError('notificationEmail', !notificationEmail.trim()
+      ? { kind: 'idle', message: '' }
+      : isValidNotificationEmail(notificationEmail.trim())
+        ? { kind: 'valid', message: t('✓ Email đúng định dạng.', '✓ Valid email format.') }
+        : { kind: 'invalid', message: t('Nhập email hợp lệ, ví dụ you@example.com.', 'Enter a valid email, for example you@example.com.') }),
     accessKey: withServerError('accessKey', requiredFieldState(
       'accessKey',
       Boolean(accessKeySuffix.trim()),
@@ -311,8 +318,8 @@ export default function Home() {
 
   async function submitClaim(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setTouched({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
-    setRequiredOnSubmit({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, accessKey: true, rules: true });
+    setTouched({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
+    setRequiredOnSubmit({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, notificationEmail: false, accessKey: true, rules: true });
     const localFieldsAreValid = Boolean(selectedParentDomain)
       && isValidSubdomain(subdomain)
       && isValidCnameTarget(
@@ -320,6 +327,7 @@ export default function Home() {
         registryDomains.map((domain) => domain.hostname),
       )
       && isValidTelegramUsername(telegramUsername)
+      && (!notificationEmail.trim() || isValidNotificationEmail(notificationEmail.trim()))
       && isValidOwnerAccessKey(accessKey)
       && acceptedRules;
     if (!localFieldsAreValid) {
@@ -338,7 +346,7 @@ export default function Home() {
       const response = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subdomain, parentDomainId, cnameTarget, telegramUsername, accessKey, acceptedRules, website }),
+        body: JSON.stringify({ subdomain, parentDomainId, cnameTarget, telegramUsername, notificationEmail, notificationLanguage: language, accessKey, acceptedRules, website }),
       });
       const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId'; requestId?: string; retryAfterSeconds?: number };
       if (!response.ok || !payload.requestId) {
@@ -402,6 +410,12 @@ export default function Home() {
           <label htmlFor="cname-target">{t('CNAME đích', 'CNAME destination')}
             <input id="cname-target" className={inputClass('cnameTarget')} placeholder="your-project.pages.dev" value={cnameTarget} onChange={(event) => { setCnameTarget(event.target.value); resetFieldFeedback('cnameTarget'); }} onBlur={() => markTouched('cnameTarget')} required />
             {displayHint('cnameTarget', t('Thêm custom domain tại dịch vụ host của bạn trước khi gửi yêu cầu.', 'Add this custom domain at your hosting provider before sending the request.'))}
+          </label>
+          <label htmlFor="notification-email">{t('Email nhận thông báo khi được duyệt', 'Email for approval notifications')} <span className="optional-field-label">{t('(tùy chọn)', '(optional)')}</span>
+            <input id="notification-email" className={inputClass('notificationEmail')} type="email" inputMode="email" autoComplete="email" maxLength={254} placeholder="you@example.com" value={notificationEmail}
+              aria-invalid={touched.notificationEmail && fieldState.notificationEmail.kind === 'invalid'} aria-describedby="notification-email-hint"
+              onChange={(event) => { setNotificationEmail(event.target.value); resetFieldFeedback('notificationEmail'); }} onBlur={() => markTouched('notificationEmail')} />
+            <div id="notification-email-hint">{displayHint('notificationEmail', t('Nhận thư kèm link DNS Panel sau khi admin duyệt. Có thể bỏ trống.', 'Receive an email with your DNS Panel link after approval. You may leave this blank.'))}</div>
           </label>
           <div className="form-pair">
             <label htmlFor="telegram-username">Telegram username

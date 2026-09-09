@@ -32,6 +32,7 @@ type RequestSession = {
     id: string;
     hostname: string;
     cnameTarget: string;
+    notificationEmail: string | null;
     telegramUsername: string | null;
     status: 'pending' | 'rejected';
     createdAt: number;
@@ -879,6 +880,7 @@ export default function ManagePage() {
           <section className={`panel pending-request-panel${isPending ? '' : ' rejected-request-panel'}`}>
             <div className="pending-request-head"><div><p className="eyebrow"><span className="pixel-dot" /> {isPending ? 'WAITING FOR REVIEW' : 'REQUEST CLOSED'}</p><h2>{request.hostname}</h2></div><span className={`status ${isPending ? 'pending' : 'rejected'}`}>{isPending ? 'pending' : 'rejected'}</span></div>
             <div className="request-details pending-request-details"><div>CNAME<strong>{request.cnameTarget}</strong></div><div>Telegram<strong>{request.telegramUsername ? `@${request.telegramUsername}` : t('Không có', 'None')}</strong></div><div>{t('Gửi lúc', 'Sent')}<strong>{date(request.createdAt)}</strong></div></div>
+            {request.notificationEmail && <p className="note">{t('Email nhận thông báo:', 'Notification email:')} {request.notificationEmail}</p>}
             {request.reviewerNote && <p className="note">{t('Lý do từ chối từ admin:', 'Reason from admin:')} {request.reviewerNote}</p>}
             {isPending ? <><p className="pending-copy">{t('Chưa có DNS record nào được tạo và bạn chưa thể sửa DNS trong lúc chờ. Nếu admin vừa duyệt, hãy tải lại trạng thái để mở panel ngay.', 'No DNS records have been created and DNS cannot be edited while awaiting review. If an admin just approved it, refresh this status to open the panel.')}</p><div className="editor-actions pending-actions"><button type="button" className="button secondary-action" onClick={() => void refreshRequestStatus()} disabled={state !== 'idle'}>{state === 'loading' ? t('Đang kiểm tra...', 'Checking...') : t('Tải lại trạng thái', 'Refresh status')}</button><button type="button" className="button reject" onClick={() => { setCancelRequestOpen((open) => !open); setCancelRequestConfirmation(''); }}>{t('Hủy yêu cầu', 'Cancel request')}</button></div></> : <div className="pending-actions"><Link className="button secondary-action" href="/">{t('Gửi yêu cầu mới', 'Send a new request')}</Link></div>}
           </section>

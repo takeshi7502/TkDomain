@@ -7,6 +7,8 @@ import { createCloudflareRecord, deleteCloudflareRecord, findCloudflareRecordByC
 import { isAdminAuthorized } from '@/lib/admin-auth';
 import { fullRecordName, type ValidatedDnsRecord } from '@/lib/dns';
 import { createOwnerAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
+import { notifyApprovedRequest } from '@/lib/approval-email';
+import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 
 const REVIEW_LEASE_MS = 10 * 60_000;
 
@@ -138,13 +140,23 @@ export async function GET(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
-  const body = await request.json() as { id?: string; action?: 'provision' | 'reject' | 'reset_access'; note?: string };
+  const body = await request.json() as { id?: string; action?: 'provision' | 'reject' | 'reset_access' | 'retry_email'; note?: string };
   if (!body.id || !body.action) return NextResponse.json({ error: 'Missing request action.' }, { status: 400 });
 
   await ensureRegistrySchema();
   const db = getDb();
   const requestRecord = await db.query.subdomainRequests.findFirst({ where: eq(subdomainRequests.id, body.id) });
   if (!requestRecord) return NextResponse.json({ error: 'Request not found.' }, { status: 404 });
+
+  if (body.action === 'retry_email') {
+    if (requestRecord.status !== 'active' || !requestRecord.notificationEmail) {
+      return NextResponse.json({ error: 'Chỉ yêu cầu đã duyệt và có email mới gửi được thư.' }, { status: 409 });
+    }
+    const limit = await enforceRegistryRateLimit(request, 'admin-retry-approval-email', 10, 60_000);
+    if (!limit.allowed) return NextResponse.json({ error: 'Thao tác quá nhanh. Hãy chờ một phút.' }, { status: 429 });
+    const approvalEmail = await notifyApprovedRequest(requestRecord.id);
+    return NextResponse.json({ ok: true, approvalEmail });
+  }
 
   if (body.action === 'reset_access') {
     if (requestRecord.status !== 'active') return NextResponse.json({ error: 'Chỉ subdomain đang active mới có access key.' }, { status: 409 });
@@ -355,9 +367,11 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Không thể tạo owner cho request này.' }, { status: 409 });
   }
 
+  const approvalEmail = await notifyApprovedRequest(claimedRequest.id);
   return NextResponse.json({
     ok: true,
     status: 'active',
+    approvalEmail,
     recordId: cloudflareRecordId,
     ownerAccessKey: accessKey,
     accessKeyProvided: Boolean(claimedRequest.requestedAccessKeyHash),

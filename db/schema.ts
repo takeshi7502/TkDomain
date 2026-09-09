@@ -39,6 +39,13 @@ export const subdomainRequests = pgTable(
     cnameTarget: text('cname_target').notNull(),
     githubHandle: text('github_handle'),
     email: text('email').notNull(),
+    // Delivery only: never use an unverified address for owner lookup or access.
+    notificationEmail: text('notification_email'),
+    notificationLanguage: text('notification_language').notNull().default('vi'),
+    approvalEmailSentAt: bigint('approval_email_sent_at', { mode: 'number' }),
+    approvalEmailFirstAttemptAt: bigint('approval_email_first_attempt_at', { mode: 'number' }),
+    approvalEmailAttemptedAt: bigint('approval_email_attempted_at', { mode: 'number' }),
+    approvalEmailError: text('approval_email_error'),
     telegramUsername: text('telegram_username'),
     requestedAccessKeyHash: text('requested_access_key_hash'),
     status: text('status', { enum: ['pending', 'active', 'rejected', 'cancelled', 'released'] }).notNull().default('pending'),

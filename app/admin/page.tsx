@@ -7,6 +7,7 @@ import { useNoticeToast } from '@/app/components/ToastProvider';
 
 type RequestStatus = 'pending' | 'active' | 'rejected' | 'cancelled' | 'released';
 type DashboardTab = 'active-subdomains' | 'pending-requests' | 'request-log' | 'dns-log' | 'domains';
+type ApprovalEmailResult = 'accepted' | 'not_requested' | 'not_configured' | 'failed' | 'busy' | 'manual_check' | 'inactive';
 
 type RequestRecord = {
   id: string;
@@ -14,6 +15,12 @@ type RequestRecord = {
   parentDomain: string;
   cnameTarget: string;
   telegramUsername: string | null;
+  notificationEmail: string | null;
+  notificationLanguage: string;
+  approvalEmailSentAt: number | null;
+  approvalEmailFirstAttemptAt: number | null;
+  approvalEmailAttemptedAt: number | null;
+  approvalEmailError: string | null;
   status: RequestStatus;
   createdAt: number;
   reviewedAt: number | null;
@@ -109,6 +116,27 @@ function requestStatusLabel(status: RequestStatus) {
 
 function requestUpdatedAt(request: RequestRecord) {
   return request.cancelledAt ?? request.releasedAt ?? request.reviewedAt;
+}
+
+function approvalEmailStatus(request: RequestRecord) {
+  if (!request.notificationEmail) return null;
+  if (request.approvalEmailSentAt) return `Đã gửi ${formatDate(request.approvalEmailSentAt)}`;
+  if (request.status !== 'active') return 'Sẽ gửi khi duyệt';
+  if (request.approvalEmailError === 'not_configured') return 'Chưa cấu hình Resend';
+  if (request.approvalEmailError === 'recipient_rate_limit') return 'Đang giới hạn gửi';
+  if (request.approvalEmailError) return 'Gửi lỗi';
+  if (request.approvalEmailAttemptedAt) return 'Chưa xác nhận gửi';
+  return 'Chờ gửi';
+}
+
+function approvalEmailNotice(result: ApprovalEmailResult | undefined, successText: string): Notice {
+  if (!result || result === 'not_requested') return { tone: 'success', text: successText };
+  if (result === 'accepted') return { tone: 'success', text: `${successText} Email duyệt đã được gửi.` };
+  if (result === 'not_configured') return { tone: 'error', text: `${successText} Chưa gửi email vì Vercel còn thiếu RESEND_API_KEY hoặc EMAIL_FROM.` };
+  if (result === 'busy') return { tone: 'info', text: 'Email đang được xử lý hoặc vừa được thử gửi. Hãy chờ ít nhất 1 phút rồi tải lại.' };
+  if (result === 'manual_check') return { tone: 'error', text: 'Lần gửi đầu đã quá lâu. Kiểm tra Resend dashboard trước khi gửi thủ công để tránh gửi trùng.' };
+  if (result === 'inactive') return { tone: 'error', text: 'Chỉ có thể gửi email duyệt cho request đang active.' };
+  return { tone: 'error', text: `${successText} Gửi email thất bại; có thể thử lại sau ít nhất 1 phút trong Nhật ký yêu cầu.` };
 }
 
 function dnsActionLabel(action: string) {
@@ -412,8 +440,8 @@ export default function AdminPage() {
     }
   }
 
-  async function review(id: string, action: 'provision' | 'reject' | 'reset_access', note?: string) {
-    const label = action === 'provision' ? 'duyệt và tạo DNS' : action === 'reject' ? 'từ chối' : 'tạo access key mới';
+  async function review(id: string, action: 'provision' | 'reject' | 'reset_access' | 'retry_email', note?: string) {
+    const label = action === 'provision' ? 'duyệt và tạo DNS' : action === 'reject' ? 'từ chối' : action === 'reset_access' ? 'tạo access key mới' : 'gửi lại email duyệt';
     if (action !== 'reject' && !window.confirm(`Bạn muốn ${label} request này?`)) return;
     actingOnRef.current = id;
     setActingOn(id);
@@ -424,20 +452,22 @@ export default function AdminPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, action, ...(action === 'reject' ? { note } : {}) }),
       });
-      const payload = await response.json() as { error?: string; ownerAccessKey?: string; accessKeyProvided?: boolean; subdomain?: string };
+      const payload = await response.json() as { error?: string; ownerAccessKey?: string; accessKeyProvided?: boolean; subdomain?: string; approvalEmail?: ApprovalEmailResult };
       if (!response.ok) throw new Error(payload.error ?? 'Không thể cập nhật request.');
       if (payload.ownerAccessKey && payload.subdomain) {
         setAccessKey({ subdomain: payload.subdomain, value: payload.ownerAccessKey });
-        setNotice({ tone: 'success', text: 'DNS đã sẵn sàng. Gửi access key dưới đây riêng cho chủ subdomain.' });
+        setNotice(approvalEmailNotice(payload.approvalEmail, 'DNS đã sẵn sàng. Gửi access key dưới đây riêng cho chủ subdomain.'));
       } else {
-        setNotice({
-          tone: 'success',
-          text: action === 'reject'
-            ? 'Đã từ chối request.'
+        const successText = action === 'reject'
+          ? 'Đã từ chối request.'
+          : action === 'retry_email'
+            ? 'Đã xử lý yêu cầu gửi email duyệt.'
             : payload.accessKeyProvided
               ? 'DNS đã sẵn sàng. Chủ subdomain sẽ dùng access key đã tự đặt khi đăng ký.'
-              : 'Đã cập nhật request.',
-        });
+              : 'Đã cập nhật request.';
+        setNotice(action === 'reject' || action === 'reset_access'
+          ? { tone: 'success', text: successText }
+          : approvalEmailNotice(payload.approvalEmail, successText));
       }
       if (action === 'reject') {
         setRejectingRequestId(null);
@@ -474,7 +504,7 @@ export default function AdminPage() {
 
   function renderAdminAction(
     id: string,
-    action: 'provision' | 'reject' | 'reset_access',
+    action: 'provision' | 'reject' | 'reset_access' | 'retry_email',
     label: string,
     symbol: string,
     danger = false,
@@ -499,6 +529,7 @@ export default function AdminPage() {
 
   function renderRequestRow(request: RequestRecord, showActions = false) {
     const updatedAt = requestUpdatedAt(request);
+    const emailStatus = approvalEmailStatus(request);
     const rejectEditorOpen = rejectingRequestId === request.id;
     const reasonLength = rejectionReason.trim().length;
     return <article className={`panel admin-list-row${rejectEditorOpen ? ' rejecting' : ''}`} key={request.id}>
@@ -507,6 +538,8 @@ export default function AdminPage() {
         <div className="admin-row-meta">
           <span title={`CNAME: ${request.cnameTarget}`}><b>CNAME</b>{request.cnameTarget}</span>
           <span><b>Telegram</b>{request.telegramUsername ? `@${request.telegramUsername}` : 'Yêu cầu cũ'}</span>
+          {request.notificationEmail && <span title={`Email duyệt: ${request.notificationEmail}`}><b>Email duyệt</b>{request.notificationEmail}</span>}
+          {emailStatus && <span><b>Trạng thái email</b>{emailStatus}</span>}
           <span><b>Gửi</b>{formatDate(request.createdAt)}</span>
           {updatedAt && <span><b>Cập nhật</b>{formatDate(updatedAt)}</span>}
         </div>
@@ -519,6 +552,7 @@ export default function AdminPage() {
           {renderAdminAction(request.id, 'reject', 'Từ chối yêu cầu', '×', true)}
         </div>}
         {!showActions && request.status === 'active' && <div className="admin-row-actions">
+          {request.notificationEmail && !request.approvalEmailSentAt && renderAdminAction(request.id, 'retry_email', 'Gửi hoặc thử lại email duyệt', '✉')}
           {renderAdminAction(request.id, 'reset_access', 'Tạo access key mới', '↻')}
         </div>}
       </div>

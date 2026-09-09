@@ -7,7 +7,8 @@ Takeshi Domains, còn admin có thể mở thêm các parent domain (ví dụ
 ## Cách hoạt động
 
 1. Người dùng thêm custom domain ở dịch vụ host của họ.
-2. Họ gửi tên subdomain, CNAME đích, GitHub và email.
+2. Họ gửi tên subdomain, CNAME đích, Telegram, access key tự đặt và email nhận
+   thông báo duyệt (email là tùy chọn).
 3. Yêu cầu được lưu ở trạng thái `pending`.
 4. Admin duyệt yêu cầu. Nếu DNS automation đã được cấu hình, app tạo CNAME
    DNS-only trong đúng Cloudflare zone mà người dùng đã chọn và chuyển request
@@ -33,6 +34,8 @@ TELEGRAM_ADMIN_CHAT_ID=<chat ID của admin, nếu dùng thông báo admin>
 TELEGRAM_BOT_USERNAME=<username bot, không có @; tùy chọn>
 TELEGRAM_WEBHOOK_SECRET=<random-secret-32-plus-chars>
 REGISTRY_PUBLIC_URL=https://domain.takeshi.dev
+RESEND_API_KEY=<Resend API key chỉ có quyền gửi email>
+EMAIL_FROM=Takeshi Domains <notify@mail.takeshi.dev>
 ```
 
 `CLOUDFLARE_API_TOKEN` là secret dùng chung cho các zone mà registry quản lý.
@@ -41,6 +44,23 @@ và `Zone > Zone > Read`; scope token tới tất cả các zone sẽ thêm vào
 `CLOUDFLARE_ZONE_ID` chỉ giúp tự seed `takeshi.dev` tương thích với dữ liệu cũ;
 các domain thêm sau đó tự được tra Zone ID và lưu ID không bí mật trong database.
 Không bao giờ commit secret vào Git.
+
+## Email thông báo duyệt (Resend)
+
+Email trong form đăng ký chỉ dùng để gửi một thông báo sau khi DNS đã được tạo và
+request đã chuyển sang `active`. Email không được dùng để đăng nhập, tìm owner hoặc
+khôi phục access key; access key cũng không bao giờ được đưa vào thư.
+
+1. Trong Resend, thêm và xác minh sending domain `mail.takeshi.dev`.
+2. Thêm chính xác các DNS record Resend cung cấp vào Cloudflare và để **DNS only**.
+3. Tạo API key chỉ có quyền gửi thư.
+4. Thêm `RESEND_API_KEY` và `EMAIL_FROM` vào Production Environment Variables của
+   Vercel, rồi redeploy production.
+
+Việc gửi thư chạy sau transaction duyệt DNS. Nếu Resend chưa được cấu hình hoặc gửi
+lỗi, subdomain vẫn active; admin sẽ thấy trạng thái lỗi trong **Nhật ký yêu cầu** và
+có nút hình phong bì để thử lại. Hệ thống khóa lần gửi song song, giới hạn số lần gửi
+theo người nhận và dùng idempotency key để tránh gửi trùng khi retry.
 
 ## Nhiều domain
 

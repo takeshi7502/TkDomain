@@ -12,6 +12,8 @@ export type ClaimInput = {
   parentDomainId: string;
   cnameTarget: string;
   telegramUsername: string;
+  notificationEmail?: string;
+  notificationLanguage?: 'vi' | 'en';
   accessKey: string;
   acceptedRules: boolean;
   website?: string;
@@ -54,6 +56,17 @@ export function isValidTelegramUsername(value: string) {
   return /^[a-z][a-z0-9_]{4,31}$/i.test(value);
 }
 
+/** One ordinary mailbox only; reject headers, recipient lists and display names. */
+export function isValidNotificationEmail(value: string) {
+  if (value.length > 254 || /[\s\r\n]/.test(value)) return false;
+  const parts = value.split('@');
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  return local.length > 0 && local.length <= 64
+    && /^[a-z0-9!#$%&'*+\-/=?^_`{|}~]+(?:\.[a-z0-9!#$%&'*+\-/=?^_`{|}~]+)*$/i.test(local)
+    && isValidParentDomain(domain.toLowerCase());
+}
+
 export function isValidOwnerAccessKey(value: string) {
   if (!value.startsWith(OWNER_ACCESS_KEY_PREFIX)) return false;
   const suffix = value.slice(OWNER_ACCESS_KEY_PREFIX.length);
@@ -70,14 +83,19 @@ export function validateClaim(input: Partial<ClaimInput>, registryDomains: reado
   const cnameTarget = normalizeCname(typeof input.cnameTarget === 'string' ? input.cnameTarget : '');
   const telegramUsername = normalizeTelegramUsername(typeof input.telegramUsername === 'string' ? input.telegramUsername : '');
   const accessKey = typeof input.accessKey === 'string' ? input.accessKey.trim() : '';
+  const notificationEmail = typeof input.notificationEmail === 'string' ? input.notificationEmail.trim().toLowerCase() : '';
+  const notificationLanguage = input.notificationLanguage === 'en' ? 'en' as const : 'vi' as const;
 
   if (typeof input.website === 'string' && input.website.trim()) return { error: 'Request could not be verified.' as const };
   if (!isValidSubdomain(subdomain)) return { error: 'Tên subdomain không hợp lệ hoặc đang được reserved.' as const };
   if (!parentDomainId || parentDomainId.length > 120) return { error: 'Tên miền đăng ký không hợp lệ.' as const };
   if (!isValidCnameTarget(cnameTarget, registryDomains)) return { error: 'CNAME destination không hợp lệ.' as const };
   if (!isValidTelegramUsername(telegramUsername)) return { error: 'Telegram username không hợp lệ.' as const };
+  if ((input.notificationEmail != null && typeof input.notificationEmail !== 'string') || (notificationEmail && !isValidNotificationEmail(notificationEmail))) {
+    return { error: 'Email nhận thông báo không hợp lệ. Ví dụ: you@example.com.' as const, field: 'notificationEmail' as const };
+  }
   if (!isValidOwnerAccessKey(accessKey)) return { error: 'Access key phải bắt đầu bằng tk-, có phần tự đặt dài 11–29 ký tự, gồm cả chữ và số; chỉ dùng . _ - khi cần.' as const };
   if (input.acceptedRules !== true) return { error: 'Bạn cần đồng ý với registry rules.' as const };
 
-  return { value: { subdomain, parentDomainId, cnameTarget, telegramUsername, accessKey } };
+  return { value: { subdomain, parentDomainId, cnameTarget, telegramUsername, accessKey, notificationEmail: notificationEmail || null, notificationLanguage } };
 }

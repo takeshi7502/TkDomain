@@ -40,6 +40,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
 
 @media (max-width: 700px) { .availability-control { grid-template-columns: 1fr; }.check-button { width: 100%; }.primary-domain-panel, .delete-subdomain-panel { padding: 18px; }.primary-domain-heading { flex-direction: column; }.primary-actions { flex-direction: column; }.primary-actions .button { width: 100%; }.primary-record-summary { grid-template-columns: 46px minmax(0, 1fr); } }
 
+.optional-field-label { color: var(--muted); font-weight: 400; font-size: 9px; letter-spacing: 0; }
 .content-grid { align-items: stretch; }
 .content-grid > * { min-width: 0; }
 

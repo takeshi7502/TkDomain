@@ -139,6 +139,8 @@ export async function POST(request: NextRequest) {
       cnameTarget: result.value.cnameTarget,
       githubHandle: null,
       email: `telegram:${result.value.telegramUsername}`,
+      notificationEmail: result.value.notificationEmail,
+      notificationLanguage: result.value.notificationLanguage,
       telegramUsername: result.value.telegramUsername,
       requestedAccessKeyHash: accessKeyHash,
       status: 'pending',

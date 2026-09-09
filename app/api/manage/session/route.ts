@@ -61,6 +61,7 @@ async function requestPayload(requestRecord: typeof subdomainRequests.$inferSele
       hostname: `${requestRecord.subdomain}.${parentDomain?.hostname ?? BASE_DOMAIN}`,
       cnameTarget: requestRecord.cnameTarget,
       telegramUsername: requestRecord.telegramUsername,
+      notificationEmail: requestRecord.notificationEmail,
       status: requestRecord.status,
       createdAt: requestRecord.createdAt,
       reviewedAt: requestRecord.reviewedAt,
