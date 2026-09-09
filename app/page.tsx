@@ -55,7 +55,7 @@ function DomainSuffixPicker({
         aria-expanded={open}
         aria-label={chooseLabel}
       >
-        <span>{selected ? `.${selected.hostname}` : emptyLabel}</span><i aria-hidden="true">⌄</i>
+        <span>{selected ? `.${selected.hostname}` : emptyLabel}</span><i aria-hidden="true" />
       </button>
       {open && <div className="domain-suffix-menu" role="listbox" aria-label={chooseLabel}>
         {domains.map((domain) => <button
@@ -423,7 +423,7 @@ export default function Home() {
       <section className="hero" id="top">
         <p className="eyebrow"><span className="pixel-dot" /> COMMUNITY SUBDOMAIN REGISTRY</p>
         <h1>Claim your<br /><span>.takeshi.dev</span></h1>
-        <p>{t('Đăng ký subdomain miễn phí cho project, portfolio hoặc trang cá nhân của bạn.', 'Claim a free subdomain for your project, portfolio, or personal site.')}</p>
+        <p>{t('Đăng ký subdomain miễn phí cho project hoặc trang cá nhân của bạn.', 'Claim a free subdomain for your project, portfolio, or personal site.')}</p>
         <div className="hero-name-check">
           <div className="hero-check-row">
             <div className={inputClass('subdomain', 'field-combo')}><input id="hero-subdomain" aria-label={t('Kiểm tra subdomain', 'Check subdomain')} placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" /><DomainSuffixPicker domains={registryDomains} value={parentDomainId} onChange={selectParentDomain} onBlur={() => markTouched('parentDomain')} emptyLabel={t('Không có domain', 'No domains')} chooseLabel={t('Chọn domain', 'Choose domain')} /></div>
@@ -444,7 +444,7 @@ export default function Home() {
             <label htmlFor="record-type">{t('Loại record', 'Record type')}
               <span className="record-type-select"><select id="record-type" className="field" value={recordType} onChange={(event) => { const nextType = event.target.value as RegistrationRecordType; setRecordType(nextType); setRecordPriority((current) => nextType === 'MX' ? current : ''); resetFieldFeedback('recordContent'); resetFieldFeedback('recordPriority'); }}>
                 {REGISTRATION_RECORD_TYPES.map((type) => <option value={type} key={type}>{type}</option>)}
-              </select><i aria-hidden="true">⌄</i></span>
+              </select><i aria-hidden="true" /></span>
             </label>
             <label htmlFor="record-content">{t('Nội dung record', 'Record content')}
               <input id="record-content" className={inputClass('recordContent')} placeholder={recordContentPlaceholder} value={recordContent} onChange={(event) => { setRecordContent(event.target.value); resetFieldFeedback('recordContent'); }} onBlur={() => markTouched('recordContent')} maxLength={2048} required />
