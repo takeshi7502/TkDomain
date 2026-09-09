@@ -11,7 +11,7 @@ type SubmissionState =
   | { type: 'idle' }
   | { type: 'loading' }
   | { type: 'error'; message: string }
-  | { type: 'success'; requestId: string };
+  | { type: 'success'; requestId: string; requestEmail: 'accepted' | 'not_configured' | 'failed' | 'busy' };
 type AvailabilityState = 'idle' | 'checking' | 'available' | 'taken' | 'error';
 type FieldName = 'subdomain' | 'parentDomain' | 'cnameTarget' | 'telegramUsername' | 'notificationEmail' | 'accessKey' | 'rules';
 type FieldState = { kind: 'idle' | 'valid' | 'invalid'; message: string };
@@ -132,11 +132,16 @@ export default function Home() {
       pushToast({
         tone: 'success',
         text: language === 'en'
-          ? `Request received for ${hostname}. Request ID: ${submission.requestId.slice(0, 8)}.${notificationEmail.trim() ? ' We will email you after approval.' : ''}`
-          : `Đã nhận yêu cầu cho ${hostname}. Mã request: ${submission.requestId.slice(0, 8)}.${notificationEmail.trim() ? ' Email sẽ được gửi sau khi admin duyệt.' : ''}`,
+          ? `Request received for ${hostname}. Request ID: ${submission.requestId.slice(0, 8)}.`
+          : `Đã nhận yêu cầu cho ${hostname}. Mã request: ${submission.requestId.slice(0, 8)}.`,
       });
+      if (submission.requestEmail === 'accepted') {
+        pushToast({ tone: 'success', text: language === 'en' ? 'A confirmation email was sent. You will receive another email after approval.' : 'Email xác nhận đã được gửi. Bạn sẽ nhận thêm thư khi yêu cầu được duyệt.' });
+      } else {
+        pushToast({ tone: 'error', text: language === 'en' ? 'Your request was saved, but its confirmation email could not be sent. The admin still received your request.' : 'Yêu cầu đã được lưu nhưng chưa gửi được email xác nhận. Admin vẫn nhận được yêu cầu.' });
+      }
     }
-  }, [language, notificationEmail, pushToast, selectedParentDomainName, subdomain, submission]);
+  }, [language, pushToast, selectedParentDomainName, subdomain, submission]);
 
   function withServerError(field: FieldName, state: FieldState): FieldState {
     return serverErrors[field] ? { kind: 'invalid', message: serverErrors[field] } : state;
@@ -177,11 +182,13 @@ export default function Home() {
       t('✓ Telegram username hợp lệ.', '✓ Valid Telegram username.'),
       !telegramUsername.trim() ? t('Nhập Telegram username.', 'Enter your Telegram username.') : t('Username Telegram dài 5–32 ký tự, bắt đầu bằng chữ và chỉ dùng chữ, số, _.', 'Use 5–32 characters, beginning with a letter; letters, numbers, and _ only.'),
     )),
-    notificationEmail: withServerError('notificationEmail', !notificationEmail.trim()
-      ? { kind: 'idle', message: '' }
-      : isValidNotificationEmail(notificationEmail.trim())
-        ? { kind: 'valid', message: t('✓ Email đúng định dạng.', '✓ Valid email format.') }
-        : { kind: 'invalid', message: t('Nhập email hợp lệ, ví dụ you@example.com.', 'Enter a valid email, for example you@example.com.') }),
+    notificationEmail: withServerError('notificationEmail', requiredFieldState(
+      'notificationEmail',
+      Boolean(notificationEmail.trim()),
+      isValidNotificationEmail(notificationEmail.trim()),
+      t('✓ Email đúng định dạng.', '✓ Valid email format.'),
+      !notificationEmail.trim() ? t('Nhập email nhận thông báo.', 'Enter a notification email.') : t('Nhập email hợp lệ, ví dụ you@example.com.', 'Enter a valid email, for example you@example.com.'),
+    )),
     accessKey: withServerError('accessKey', requiredFieldState(
       'accessKey',
       Boolean(accessKeySuffix.trim()),
@@ -319,7 +326,7 @@ export default function Home() {
   async function submitClaim(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setTouched({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
-    setRequiredOnSubmit({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, notificationEmail: false, accessKey: true, rules: true });
+    setRequiredOnSubmit({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
     const localFieldsAreValid = Boolean(selectedParentDomain)
       && isValidSubdomain(subdomain)
       && isValidCnameTarget(
@@ -327,7 +334,7 @@ export default function Home() {
         registryDomains.map((domain) => domain.hostname),
       )
       && isValidTelegramUsername(telegramUsername)
-      && (!notificationEmail.trim() || isValidNotificationEmail(notificationEmail.trim()))
+      && isValidNotificationEmail(notificationEmail.trim())
       && isValidOwnerAccessKey(accessKey)
       && acceptedRules;
     if (!localFieldsAreValid) {
@@ -348,7 +355,7 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subdomain, parentDomainId, cnameTarget, telegramUsername, notificationEmail, notificationLanguage: language, accessKey, acceptedRules, website }),
       });
-      const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId'; requestId?: string; retryAfterSeconds?: number };
+      const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId'; requestId?: string; requestEmail?: 'accepted' | 'not_configured' | 'failed' | 'busy'; retryAfterSeconds?: number };
       if (!response.ok || !payload.requestId) {
         if (payload.field) {
           const field = payload.field === 'parentDomainId' ? 'parentDomain' : payload.field;
@@ -366,7 +373,7 @@ export default function Home() {
         setSubmission({ type: 'error', message: retryAfter ? language === 'en' ? `${errorMessage} Try again in about ${retryAfter}.` : `${errorMessage} Thời gian chờ còn lại: khoảng ${retryAfter}.` : errorMessage });
         return;
       }
-      setSubmission({ type: 'success', requestId: payload.requestId });
+      setSubmission({ type: 'success', requestId: payload.requestId, requestEmail: payload.requestEmail ?? 'failed' });
       setAvailability('idle');
       setAvailabilityMessage('');
     } catch {
@@ -411,12 +418,6 @@ export default function Home() {
             <input id="cname-target" className={inputClass('cnameTarget')} placeholder="your-project.pages.dev" value={cnameTarget} onChange={(event) => { setCnameTarget(event.target.value); resetFieldFeedback('cnameTarget'); }} onBlur={() => markTouched('cnameTarget')} required />
             {displayHint('cnameTarget', t('Thêm custom domain tại dịch vụ host của bạn trước khi gửi yêu cầu.', 'Add this custom domain at your hosting provider before sending the request.'))}
           </label>
-          <label htmlFor="notification-email">{t('Email nhận thông báo khi được duyệt', 'Email for approval notifications')} <span className="optional-field-label">{t('(tùy chọn)', '(optional)')}</span>
-            <input id="notification-email" className={inputClass('notificationEmail')} type="email" inputMode="email" autoComplete="email" maxLength={254} placeholder="you@example.com" value={notificationEmail}
-              aria-invalid={touched.notificationEmail && fieldState.notificationEmail.kind === 'invalid'} aria-describedby="notification-email-hint"
-              onChange={(event) => { setNotificationEmail(event.target.value); resetFieldFeedback('notificationEmail'); }} onBlur={() => markTouched('notificationEmail')} />
-            <div id="notification-email-hint">{displayHint('notificationEmail', t('Nhận thư kèm link DNS Panel sau khi admin duyệt. Có thể bỏ trống.', 'Receive an email with your DNS Panel link after approval. You may leave this blank.'))}</div>
-          </label>
           <div className="form-pair">
             <label htmlFor="telegram-username">Telegram username
               <input id="telegram-username" className={inputClass('telegramUsername')} placeholder="username" value={telegramUsername} onChange={(event) => { setTelegramUsername(event.target.value.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32)); resetFieldFeedback('telegramUsername'); }} onBlur={() => markTouched('telegramUsername')} autoComplete="username" required />
@@ -427,8 +428,14 @@ export default function Home() {
               {displayHint('accessKey', t('Phần bạn đặt dài 11–29 ký tự, bắt buộc có cả chữ và số; chỉ dùng thêm . _ - khi cần.', 'Use 11–29 characters with letters and numbers; . _ - are optional.'))}
             </label>
           </div>
-          <label className="check-row" htmlFor="rules"><input id="rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>{t('Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.', 'I agree to use this subdomain appropriately and follow the rules.')}</span></label>
-          {touched.rules && fieldState.rules.kind !== 'idle' && <small className={fieldState.rules.kind === 'valid' ? 'field-good rules-feedback' : 'field-bad rules-feedback'}>{fieldState.rules.message}</small>}
+          <label htmlFor="notification-email">{t('Email nhận thông báo', 'Notification email')}
+            <input id="notification-email" className={inputClass('notificationEmail')} type="email" inputMode="email" autoComplete="email" maxLength={254} placeholder="you@example.com" value={notificationEmail}
+              aria-invalid={touched.notificationEmail && fieldState.notificationEmail.kind === 'invalid'} aria-describedby="notification-email-hint"
+              onChange={(event) => { setNotificationEmail(event.target.value); resetFieldFeedback('notificationEmail'); }} onBlur={() => markTouched('notificationEmail')} required />
+            <div id="notification-email-hint">{displayHint('notificationEmail', t('Bắt buộc · nhận thư xác nhận ngay và một thư khác sau khi được duyệt.', 'Required · receive a confirmation now and another email after approval.'))}</div>
+          </label>
+          <label className="check-row" htmlFor="accepted-rules"><input id="accepted-rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>{t('Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.', 'I agree to use this subdomain appropriately and follow the rules.')}</span></label>
+          {touched.rules && fieldState.rules.kind === 'invalid' && <small className="field-bad rules-feedback">{fieldState.rules.message}</small>}
           <label className="honeypot" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={website} onChange={(event) => setWebsite(event.target.value)} /></label>
           <button className="button" type="submit" disabled={submission.type === 'loading' || submission.type === 'success'}>{submission.type === 'loading' ? t('Đang gửi...', 'Sending...') : submission.type === 'success' ? t('Đã gửi', 'Sent') : t('Gửi yêu cầu', 'Send request')}</button>
         </form>

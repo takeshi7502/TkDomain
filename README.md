@@ -8,7 +8,7 @@ Takeshi Domains, còn admin có thể mở thêm các parent domain (ví dụ
 
 1. Người dùng thêm custom domain ở dịch vụ host của họ.
 2. Họ gửi tên subdomain, CNAME đích, Telegram, access key tự đặt và email nhận
-   thông báo duyệt (email là tùy chọn).
+   thông báo.
 3. Yêu cầu được lưu ở trạng thái `pending`.
 4. Admin duyệt yêu cầu. Nếu DNS automation đã được cấu hình, app tạo CNAME
    DNS-only trong đúng Cloudflare zone mà người dùng đã chọn và chuyển request
@@ -47,8 +47,9 @@ Không bao giờ commit secret vào Git.
 
 ## Email thông báo duyệt (Resend)
 
-Email trong form đăng ký chỉ dùng để gửi một thông báo sau khi DNS đã được tạo và
-request đã chuyển sang `active`. Email không được dùng để đăng nhập, tìm owner hoặc
+Email trong form đăng ký là bắt buộc và chỉ dùng cho thông báo: một thư xác nhận được
+gửi ngay sau khi request được lưu, sau đó một thư khác được gửi khi DNS đã được tạo
+và request chuyển sang `active`. Email không được dùng để đăng nhập, tìm owner hoặc
 khôi phục access key; access key cũng không bao giờ được đưa vào thư.
 
 1. Trong Resend, thêm và xác minh sending domain `mail.takeshi.dev`.

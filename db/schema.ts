@@ -42,6 +42,9 @@ export const subdomainRequests = pgTable(
     // Delivery only: never use an unverified address for owner lookup or access.
     notificationEmail: text('notification_email'),
     notificationLanguage: text('notification_language').notNull().default('vi'),
+    requestEmailSentAt: bigint('request_email_sent_at', { mode: 'number' }),
+    requestEmailAttemptedAt: bigint('request_email_attempted_at', { mode: 'number' }),
+    requestEmailError: text('request_email_error'),
     approvalEmailSentAt: bigint('approval_email_sent_at', { mode: 'number' }),
     approvalEmailFirstAttemptAt: bigint('approval_email_first_attempt_at', { mode: 'number' }),
     approvalEmailAttemptedAt: bigint('approval_email_attempted_at', { mode: 'number' }),

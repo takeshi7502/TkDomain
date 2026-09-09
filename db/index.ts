@@ -90,10 +90,13 @@ async function createRegistrySchema() {
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_status_created ON subdomain_requests (status, created_at)');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_email_created ON subdomain_requests (email, created_at)');
   await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS telegram_username TEXT');
-  // Same additive migration as drizzle/0006_approval_email.sql.
+  // Same additive migrations as drizzle/0006 and 0007.
   await sql.query(`ALTER TABLE subdomain_requests
     ADD COLUMN IF NOT EXISTS notification_email TEXT,
     ADD COLUMN IF NOT EXISTS notification_language TEXT NOT NULL DEFAULT 'vi',
+    ADD COLUMN IF NOT EXISTS request_email_sent_at BIGINT,
+    ADD COLUMN IF NOT EXISTS request_email_attempted_at BIGINT,
+    ADD COLUMN IF NOT EXISTS request_email_error TEXT,
     ADD COLUMN IF NOT EXISTS approval_email_sent_at BIGINT,
     ADD COLUMN IF NOT EXISTS approval_email_first_attempt_at BIGINT,
     ADD COLUMN IF NOT EXISTS approval_email_attempted_at BIGINT,

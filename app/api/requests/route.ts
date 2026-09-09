@@ -6,6 +6,7 @@ import { managedDomains, owners, subdomainRequests } from '@/db/schema';
 import { hashOwnerAccessKey } from '@/lib/owner-auth';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 import { isValidSubdomain, normalizeSubdomain, validateClaim } from '@/lib/registry';
+import { notifyRequestReceived } from '@/lib/request-email';
 import { notifyAdminOfNewRequest } from '@/lib/telegram';
 
 const RESERVED_STATUSES = ['pending', 'active'] as const;
@@ -153,13 +154,16 @@ export async function POST(request: NextRequest) {
     throw error;
   }
 
-  // A delivery failure must never invalidate a successfully stored request.
-  await notifyAdminOfNewRequest({
-    requestId: id,
-    hostname: `${result.value.subdomain}.${parentDomain.hostname}`,
-    cnameTarget: result.value.cnameTarget,
-    telegramUsername: result.value.telegramUsername,
-  });
+  // Delivery failures must never invalidate a successfully stored request.
+  const [requestEmail] = await Promise.all([
+    notifyRequestReceived(id),
+    notifyAdminOfNewRequest({
+      requestId: id,
+      hostname: `${result.value.subdomain}.${parentDomain.hostname}`,
+      cnameTarget: result.value.cnameTarget,
+      telegramUsername: result.value.telegramUsername,
+    }),
+  ]);
 
-  return NextResponse.json({ ok: true, requestId: id, status: 'pending' }, { status: 201 });
+  return NextResponse.json({ ok: true, requestId: id, status: 'pending', requestEmail }, { status: 201 });
 }
