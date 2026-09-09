@@ -5,7 +5,7 @@ import { FocusEvent, FormEvent, useEffect, useState } from 'react';
 import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
 import { useToast } from '@/app/components/ToastProvider';
 import { UserLanguageToggle, useUserLanguage } from '@/app/components/UserLanguageToggle';
-import { isValidCnameTarget, isValidNotificationEmail, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername } from '@/lib/registry';
+import { isValidNotificationEmail, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername, REGISTRATION_RECORD_TYPES, type RegistrationRecordType, validatePrimaryRecord } from '@/lib/registry';
 
 type SubmissionState =
   | { type: 'idle' }
@@ -13,7 +13,7 @@ type SubmissionState =
   | { type: 'error'; message: string }
   | { type: 'success'; requestId: string; requestEmail: 'accepted' | 'not_configured' | 'failed' | 'busy' };
 type AvailabilityState = 'idle' | 'checking' | 'available' | 'taken' | 'error';
-type FieldName = 'subdomain' | 'parentDomain' | 'cnameTarget' | 'telegramUsername' | 'notificationEmail' | 'accessKey' | 'rules';
+type FieldName = 'subdomain' | 'parentDomain' | 'recordContent' | 'recordPriority' | 'telegramUsername' | 'notificationEmail' | 'accessKey' | 'rules';
 type FieldState = { kind: 'idle' | 'valid' | 'invalid'; message: string };
 type RegistryDomain = { id: string; hostname: string };
 
@@ -75,7 +75,8 @@ function DomainSuffixPicker({
 const emptyTouched: Record<FieldName, boolean> = {
   subdomain: false,
   parentDomain: false,
-  cnameTarget: false,
+  recordContent: false,
+  recordPriority: false,
   telegramUsername: false,
   notificationEmail: false,
   accessKey: false,
@@ -103,7 +104,9 @@ export default function Home() {
   const [subdomain, setSubdomain] = useState('');
   const [registryDomains, setRegistryDomains] = useState<RegistryDomain[]>([defaultRegistryDomain]);
   const [parentDomainId, setParentDomainId] = useState(defaultRegistryDomain.id);
-  const [cnameTarget, setCnameTarget] = useState('');
+  const [recordType, setRecordType] = useState<RegistrationRecordType>('CNAME');
+  const [recordContent, setRecordContent] = useState('');
+  const [recordPriority, setRecordPriority] = useState('');
   const [telegramUsername, setTelegramUsername] = useState('');
   const [notificationEmail, setNotificationEmail] = useState('');
   const [accessKeySuffix, setAccessKeySuffix] = useState('');
@@ -121,6 +124,25 @@ export default function Home() {
   const selectedParentDomain = registryDomains.find((domain) => domain.id === parentDomainId) ?? null;
   const selectedParentDomainName = selectedParentDomain?.hostname ?? '';
   const t = <T,>(vi: T, en: T): T => language === 'en' ? en : vi;
+  const primaryRecordValidation = validatePrimaryRecord(
+    { recordType, recordContent, recordPriority },
+    registryDomains.map((domain) => domain.hostname),
+  );
+  const recordContentError = 'error' in primaryRecordValidation && primaryRecordValidation.field === 'recordContent'
+    ? primaryRecordValidation.error
+    : '';
+  const recordPriorityError = 'error' in primaryRecordValidation && primaryRecordValidation.field === 'recordPriority'
+    ? primaryRecordValidation.error
+    : '';
+  const recordContentPlaceholder = recordType === 'A'
+    ? '203.0.113.10'
+    : recordType === 'AAAA'
+      ? '2001:db8::1'
+      : recordType === 'TXT'
+        ? 'verification=value'
+        : recordType === 'CAA'
+          ? '0 issue letsencrypt.org'
+          : 'target.example.com';
 
   useEffect(() => {
     if (submission.type === 'error') {
@@ -165,16 +187,23 @@ export default function Home() {
     parentDomain: withServerError('parentDomain', !selectedParentDomain
       ? { kind: 'invalid', message: t('Hãy chọn một domain đang mở đăng ký.', 'Choose a domain that is open for registration.') }
       : { kind: 'valid', message: `✓ ${t('Đăng ký dưới', 'Register under')} .${selectedParentDomain.hostname}` }),
-    cnameTarget: withServerError('cnameTarget', requiredFieldState(
-      'cnameTarget',
-      Boolean(cnameTarget.trim()),
-      isValidCnameTarget(
-        cnameTarget.trim().toLowerCase().replace(/\.+$/, ''),
-        registryDomains.map((domain) => domain.hostname),
-      ),
-      t('✓ CNAME hợp lệ.', '✓ Valid CNAME.'),
-      !cnameTarget.trim() ? t('Nhập CNAME đích.', 'Enter a CNAME destination.') : t('CNAME cần là hostname hợp lệ, ví dụ your-project.pages.dev.', 'Use a valid hostname, for example your-project.pages.dev.'),
+    recordContent: withServerError('recordContent', requiredFieldState(
+      'recordContent',
+      Boolean(recordContent.trim()),
+      Boolean(recordContent.trim()) && !recordContentError,
+      t(`✓ ${recordType} record hợp lệ.`, `✓ Valid ${recordType} record.`),
+      !recordContent.trim() ? t('Nhập nội dung record.', 'Enter the record content.') : (recordContentError || t('Nội dung record không hợp lệ.', 'This record content is invalid.')),
     )),
+    recordPriority: withServerError('recordPriority', recordType !== 'MX'
+      ? { kind: 'idle', message: '' }
+      : requiredFieldState(
+        'recordPriority',
+        Boolean(recordPriority.trim()),
+        Boolean(recordPriority.trim()) && !recordPriorityError,
+        t('✓ MX priority hợp lệ.', '✓ Valid MX priority.'),
+        !recordPriority.trim() ? t('Nhập MX priority.', 'Enter the MX priority.') : (recordPriorityError || t('MX priority không hợp lệ.', 'This MX priority is invalid.')),
+      ),
+    ),
     telegramUsername: withServerError('telegramUsername', requiredFieldState(
       'telegramUsername',
       Boolean(telegramUsername.trim()),
@@ -325,14 +354,11 @@ export default function Home() {
 
   async function submitClaim(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setTouched({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
-    setRequiredOnSubmit({ subdomain: true, parentDomain: true, cnameTarget: true, telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
+    setTouched({ subdomain: true, parentDomain: true, recordContent: true, recordPriority: recordType === 'MX', telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
+    setRequiredOnSubmit({ subdomain: true, parentDomain: true, recordContent: true, recordPriority: recordType === 'MX', telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
     const localFieldsAreValid = Boolean(selectedParentDomain)
       && isValidSubdomain(subdomain)
-      && isValidCnameTarget(
-        cnameTarget.trim().toLowerCase().replace(/\.+$/, ''),
-        registryDomains.map((domain) => domain.hostname),
-      )
+      && 'value' in primaryRecordValidation
       && isValidTelegramUsername(telegramUsername)
       && isValidNotificationEmail(notificationEmail.trim())
       && isValidOwnerAccessKey(accessKey)
@@ -353,12 +379,12 @@ export default function Home() {
       const response = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subdomain, parentDomainId, cnameTarget, telegramUsername, notificationEmail, notificationLanguage: language, accessKey, acceptedRules, website }),
+        body: JSON.stringify({ subdomain, parentDomainId, recordType, recordContent, recordPriority: recordType === 'MX' && recordPriority !== '' ? Number(recordPriority) : null, telegramUsername, notificationEmail, notificationLanguage: language, accessKey, acceptedRules, website }),
       });
-      const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId'; requestId?: string; requestEmail?: 'accepted' | 'not_configured' | 'failed' | 'busy'; retryAfterSeconds?: number };
+      const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId' | 'recordType'; requestId?: string; requestEmail?: 'accepted' | 'not_configured' | 'failed' | 'busy'; retryAfterSeconds?: number };
       if (!response.ok || !payload.requestId) {
         if (payload.field) {
-          const field = payload.field === 'parentDomainId' ? 'parentDomain' : payload.field;
+          const field = payload.field === 'parentDomainId' ? 'parentDomain' : payload.field === 'recordType' ? 'recordContent' : payload.field;
           setServerErrors((current) => ({ ...current, [field]: language === 'en' ? 'This value is invalid.' : (payload.error ?? 'Giá trị không hợp lệ.') }));
           markTouched(field);
         }
@@ -414,10 +440,21 @@ export default function Home() {
             <div className={inputClass('subdomain', 'field-combo')}><input id="subdomain" placeholder="your-name" value={subdomain} onChange={(event) => cleanSubdomain(event.target.value)} onBlur={() => { void checkAvailability(); }} autoComplete="off" required /><DomainSuffixPicker domains={registryDomains} value={parentDomainId} onChange={selectParentDomain} onBlur={() => markTouched('parentDomain')} emptyLabel={t('Không có domain', 'No domains')} chooseLabel={t('Chọn domain', 'Choose domain')} /></div>
             {displayHint('subdomain', t('3–63 ký tự: a–z, 0–9, dấu gạch ngang. Rời ô để kiểm tra tên.', '3–63 characters: a–z, 0–9, hyphens. Leave the field to check the name.'))}
           </label>
-          <label htmlFor="cname-target">{t('CNAME đích', 'CNAME destination')}
-            <input id="cname-target" className={inputClass('cnameTarget')} placeholder="your-project.pages.dev" value={cnameTarget} onChange={(event) => { setCnameTarget(event.target.value); resetFieldFeedback('cnameTarget'); }} onBlur={() => markTouched('cnameTarget')} required />
-            {displayHint('cnameTarget', t('Thêm custom domain tại dịch vụ host của bạn trước khi gửi yêu cầu.', 'Add this custom domain at your hosting provider before sending the request.'))}
-          </label>
+          <div className={`registration-record-fields${recordType === 'MX' ? ' has-priority' : ''}`}>
+            <label htmlFor="record-type">{t('Loại record', 'Record type')}
+              <span className="record-type-select"><select id="record-type" className="field" value={recordType} onChange={(event) => { const nextType = event.target.value as RegistrationRecordType; setRecordType(nextType); setRecordPriority((current) => nextType === 'MX' ? current : ''); resetFieldFeedback('recordContent'); resetFieldFeedback('recordPriority'); }}>
+                {REGISTRATION_RECORD_TYPES.map((type) => <option value={type} key={type}>{type}</option>)}
+              </select><i aria-hidden="true">⌄</i></span>
+            </label>
+            <label htmlFor="record-content">{t('Nội dung record', 'Record content')}
+              <input id="record-content" className={inputClass('recordContent')} placeholder={recordContentPlaceholder} value={recordContent} onChange={(event) => { setRecordContent(event.target.value); resetFieldFeedback('recordContent'); }} onBlur={() => markTouched('recordContent')} maxLength={2048} required />
+              {displayHint('recordContent', recordType === 'CNAME' ? t('Thêm custom domain này tại host của bạn trước khi gửi yêu cầu.', 'Add this custom domain at your hosting provider before sending the request.') : recordType === 'MX' ? t('Nhập mail host nhận thư, ví dụ mail.example.com.', 'Enter the mail host, for example mail.example.com.') : recordType === 'CAA' ? t('Ví dụ: 0 issue letsencrypt.org.', 'Example: 0 issue letsencrypt.org.') : t('Record chính sẽ dùng TTL Auto và DNS only lúc được duyệt.', 'The primary record will use Auto TTL and DNS only when approved.'))}
+            </label>
+            {recordType === 'MX' && <label htmlFor="record-priority">{t('Priority', 'Priority')}
+              <input id="record-priority" className={inputClass('recordPriority')} type="number" inputMode="numeric" min="0" max="65535" placeholder="10" value={recordPriority} onChange={(event) => { setRecordPriority(event.target.value.replace(/\D/g, '').slice(0, 5)); resetFieldFeedback('recordPriority'); }} onBlur={() => markTouched('recordPriority')} required />
+              {displayHint('recordPriority', t('0–65535, số thấp hơn được ưu tiên trước.', '0–65535; lower numbers are preferred.'))}
+            </label>}
+          </div>
           <div className="form-pair">
             <label htmlFor="telegram-username">Telegram username
               <input id="telegram-username" className={inputClass('telegramUsername')} placeholder="username" value={telegramUsername} onChange={(event) => { setTelegramUsername(event.target.value.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32)); resetFieldFeedback('telegramUsername'); }} onBlur={() => markTouched('telegramUsername')} autoComplete="username" required />
@@ -441,8 +478,8 @@ export default function Home() {
         </form>
 
         <aside className="side-stack">
-          <section className="panel compact-panel" id="how"><p className="eyebrow"><span className="pixel-dot" /> HOW IT WORKS</p><h2>{t('Ba bước là xong', 'Three simple steps')}</h2><ol className="steps"><li><b>01</b><span>{t(<>Thêm domain này vào trang cấu hình của host: <code>name.takeshi.dev</code>.</>, <>Add this domain in your hosting provider: <code>name.takeshi.dev</code>.</>)}</span></li><li><b>02</b><span>{t('Gửi CNAME đích qua form bên cạnh.', 'Submit the destination CNAME in the form.')}</span></li><li><b>03</b><span>{t('Chờ duyệt. Khi được duyệt, DNS record sẽ được tạo.', 'Wait for review. Once approved, the DNS record is created.')}</span></li></ol></section>
-          <section className="panel compact-panel" id="rules"><p className="eyebrow"><span className="pixel-dot" /> RULES</p><h2>{t('Dùng cho đúng', 'Use it responsibly')}</h2><ul className="rules-list"><li>{t('Mọi yêu cầu được duyệt thủ công; CNAME chính chỉ được tạo sau khi duyệt.', 'Every request is reviewed manually; the primary CNAME is created only after approval.')}</li><li>{t('Sau khi active, dùng DNS Panel và access key để quản lý record dưới subdomain của bạn.', 'After activation, use DNS Panel and your access key to manage records below your subdomain.')}</li><li>{t('Giữ access key riêng tư. Phishing, spam, malware, mạo danh hoặc lạm dụng sẽ bị từ chối hoặc gỡ.', 'Keep your access key private. Phishing, spam, malware, impersonation, or abuse will be rejected or removed.')}</li></ul></section>
+          <section className="panel compact-panel" id="how"><p className="eyebrow"><span className="pixel-dot" /> HOW IT WORKS</p><h2>{t('Ba bước là xong', 'Three simple steps')}</h2><ol className="steps"><li><b>01</b><span>{t(<>Thêm domain này vào trang cấu hình của host: <code>name.takeshi.dev</code>.</>, <>Add this domain in your hosting provider: <code>name.takeshi.dev</code>.</>)}</span></li><li><b>02</b><span>{t('Chọn loại và nội dung DNS record chính trong form bên cạnh.', 'Choose the primary DNS record type and content in the form.')}</span></li><li><b>03</b><span>{t('Chờ duyệt. Khi được duyệt, DNS record sẽ được tạo.', 'Wait for review. Once approved, the DNS record is created.')}</span></li></ol></section>
+          <section className="panel compact-panel" id="rules"><p className="eyebrow"><span className="pixel-dot" /> RULES</p><h2>{t('Dùng cho đúng', 'Use it responsibly')}</h2><ul className="rules-list"><li>{t('Mọi yêu cầu được duyệt thủ công; record chính chỉ được tạo sau khi duyệt.', 'Every request is reviewed manually; the primary record is created only after approval.')}</li><li>{t('Sau khi active, dùng DNS Panel và access key để quản lý record dưới subdomain của bạn.', 'After activation, use DNS Panel and your access key to manage records below your subdomain.')}</li><li>{t('Giữ access key riêng tư. Phishing, spam, malware, mạo danh hoặc lạm dụng sẽ bị từ chối hoặc gỡ.', 'Keep your access key private. Phishing, spam, malware, impersonation, or abuse will be rejected or removed.')}</li></ul></section>
         </aside>
       </section>
 

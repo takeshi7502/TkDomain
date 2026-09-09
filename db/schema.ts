@@ -37,6 +37,8 @@ export const subdomainRequests = pgTable(
       .default(TAKESHI_DEV_MANAGED_DOMAIN_ID)
       .references(() => managedDomains.id, { onDelete: 'restrict' }),
     cnameTarget: text('cname_target').notNull(),
+    recordType: text('record_type', { enum: ['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'CAA'] }).notNull().default('CNAME'),
+    recordPriority: integer('record_priority'),
     githubHandle: text('github_handle'),
     email: text('email').notNull(),
     // Delivery only: never use an unverified address for owner lookup or access.

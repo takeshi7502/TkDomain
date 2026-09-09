@@ -277,3 +277,15 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 26px
   .recovery-panel, .telegram-unlink-panel { padding: 18px; }
   .recovery-actions { flex-direction: column; }
 }
+
+/* The primary registration record supports the same DNS types as the owner panel. */
+.registration-record-fields { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; }
+.registration-record-fields.has-priority { grid-template-columns: 92px minmax(0, 1fr) 88px; }
+.registration-record-fields > label { min-width: 0; }
+.record-type-select { position: relative; display: block; }
+.record-type-select .field { appearance: none; padding-right: 30px; }
+.record-type-select i { position: absolute; right: 11px; bottom: 12px; color: var(--lime); font-size: 14px; font-style: normal; line-height: 1; pointer-events: none; }
+
+@media (max-width: 700px) {
+  .registration-record-fields, .registration-record-fields.has-priority { grid-template-columns: 1fr; gap: 0; }
+}

@@ -5,7 +5,7 @@ import { ensureRegistrySchema, getDb } from '@/db';
 import { dnsEvents, dnsRecords, managedDomains, owners, ownerSessions, subdomains, subdomainRequests } from '@/db/schema';
 import { createCloudflareRecord, deleteCloudflareRecord, findCloudflareRecordByComment } from '@/lib/cloudflare';
 import { isAdminAuthorized } from '@/lib/admin-auth';
-import { fullRecordName, type ValidatedDnsRecord } from '@/lib/dns';
+import { fullRecordName, validateDnsRecord } from '@/lib/dns';
 import { createOwnerAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
 import { notifyApprovedRequest } from '@/lib/approval-email';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
@@ -244,7 +244,19 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Domain gốc này không còn active hoặc chưa có Cloudflare zone ID. Kiểm tra tab Domains trước khi duyệt.' }, { status: 409 });
   }
 
-  const initialRecord: ValidatedDnsRecord = { recordType: 'CNAME', recordName: '@', content: claimedRequest.cnameTarget, ttl: 1, proxied: false, priority: null };
+  const initialRecordResult = validateDnsRecord({
+    recordType: claimedRequest.recordType,
+    recordName: '@',
+    content: claimedRequest.cnameTarget,
+    ttl: 1,
+    proxied: false,
+    priority: claimedRequest.recordPriority,
+  });
+  if ('error' in initialRecordResult) {
+    await db.update(subdomainRequests).set({ reviewStartedAt: null }).where(eq(subdomainRequests.id, claimedRequest.id));
+    return NextResponse.json({ error: `Record chính không hợp lệ: ${initialRecordResult.error}` }, { status: 409 });
+  }
+  const initialRecord = initialRecordResult.value;
   const cloudflareComment = `Takeshi Domains request ${claimedRequest.id}`;
   let cloudflareRecordId: string;
   let cloudflareRecordCreatedHere = false;
@@ -328,12 +340,7 @@ export async function PATCH(request: NextRequest) {
       await tx.insert(dnsRecords).values({
         id: dnsRecordId,
         subdomainId,
-        recordType: 'CNAME',
-        recordName: '@',
-        content: claimedRequest.cnameTarget,
-        ttl: 1,
-        proxied: false,
-        priority: null,
+        ...initialRecord,
         isPrimary: true,
         cloudflareRecordId,
         createdAt: now,
@@ -347,7 +354,7 @@ export async function PATCH(request: NextRequest) {
         recordId: dnsRecordId,
         actorType: 'admin',
         action: 'primary_record_created',
-        details: { type: 'CNAME', name: '@', isPrimary: true, source: 'approval' },
+        details: { type: initialRecord.recordType, name: '@', priority: initialRecord.priority, isPrimary: true, source: 'approval' },
         createdAt: now,
       });
       const activated = await tx.update(subdomainRequests).set({

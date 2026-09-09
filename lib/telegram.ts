@@ -50,7 +50,9 @@ export type TelegramSendResult = {
 type NewRequestNotification = {
   requestId: string;
   hostname: string;
-  cnameTarget: string;
+  recordType: string;
+  recordContent: string;
+  recordPriority: number | null;
   telegramUsername: string;
 };
 
@@ -836,7 +838,8 @@ export async function notifyAdminOfNewRequest(request: NewRequestNotification) {
     '🟡 TAKESHI DOMAINS · REQUEST MỚI',
     '',
     `Tên: ${singleLine(request.hostname)}`,
-    `CNAME: ${singleLine(request.cnameTarget)}`,
+    `${singleLine(request.recordType)}: ${singleLine(request.recordContent)}`,
+    ...(request.recordPriority === null ? [] : [`Priority: ${request.recordPriority}`]),
     `Telegram: @${singleLine(request.telegramUsername)}`,
     `Mã request: ${request.requestId.slice(0, 8)}`,
     '',

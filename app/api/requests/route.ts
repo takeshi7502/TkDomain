@@ -137,7 +137,9 @@ export async function POST(request: NextRequest) {
       id,
       subdomain: result.value.subdomain,
       parentDomainId: parentDomain.id,
-      cnameTarget: result.value.cnameTarget,
+      cnameTarget: result.value.recordContent,
+      recordType: result.value.recordType,
+      recordPriority: result.value.recordPriority,
       githubHandle: null,
       email: `telegram:${result.value.telegramUsername}`,
       notificationEmail: result.value.notificationEmail,
@@ -160,7 +162,9 @@ export async function POST(request: NextRequest) {
     notifyAdminOfNewRequest({
       requestId: id,
       hostname: `${result.value.subdomain}.${parentDomain.hostname}`,
-      cnameTarget: result.value.cnameTarget,
+      recordType: result.value.recordType,
+      recordContent: result.value.recordContent,
+      recordPriority: result.value.recordPriority,
       telegramUsername: result.value.telegramUsername,
     }),
   ]);

@@ -14,6 +14,8 @@ type RequestRecord = {
   subdomain: string;
   parentDomain: string;
   cnameTarget: string;
+  recordType: string;
+  recordPriority: number | null;
   telegramUsername: string | null;
   notificationEmail: string | null;
   notificationLanguage: string;
@@ -536,7 +538,7 @@ export default function AdminPage() {
       <div className="admin-row-main">
         <h2 className="admin-row-title">{request.subdomain}<span>.{request.parentDomain}</span></h2>
         <div className="admin-row-meta">
-          <span title={`CNAME: ${request.cnameTarget}`}><b>CNAME</b>{request.cnameTarget}</span>
+          <span title={`${request.recordType}: ${request.cnameTarget}`}><b>{request.recordType}</b>{request.cnameTarget}{request.recordPriority !== null ? ` · priority ${request.recordPriority}` : ''}</span>
           <span><b>Telegram</b>{request.telegramUsername ? `@${request.telegramUsername}` : 'Yêu cầu cũ'}</span>
           {request.notificationEmail && <span title={`Email duyệt: ${request.notificationEmail}`}><b>Email duyệt</b>{request.notificationEmail}</span>}
           {emailStatus && <span><b>Trạng thái email</b>{emailStatus}</span>}
@@ -563,7 +565,7 @@ export default function AdminPage() {
             className="field"
             value={rejectionReason}
             onChange={(event) => setRejectionReason(event.target.value)}
-            placeholder="Ví dụ: CNAME chưa được cấu hình hoặc tên chưa phù hợp."
+            placeholder="Ví dụ: nội dung record chưa đúng hoặc tên chưa phù hợp."
             minLength={3}
             maxLength={500}
             rows={3}

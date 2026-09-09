@@ -1,17 +1,17 @@
 # Takeshi Domains
 
-`domain.takeshi.dev` là cổng đăng ký CNAME-only. Giao diện vẫn mang thương hiệu
+`domain.takeshi.dev` là cổng đăng ký DNS record đầu tiên cho subdomain. Giao diện vẫn mang thương hiệu
 Takeshi Domains, còn admin có thể mở thêm các parent domain (ví dụ
 `ten.example.dev`) từ tab **Domains**.
 
 ## Cách hoạt động
 
 1. Người dùng thêm custom domain ở dịch vụ host của họ.
-2. Họ gửi tên subdomain, CNAME đích, Telegram, access key tự đặt và email nhận
+2. Họ gửi tên subdomain, loại và nội dung DNS record (A, AAAA, CNAME, TXT, MX hoặc CAA), Telegram, access key tự đặt và email nhận
    thông báo.
 3. Yêu cầu được lưu ở trạng thái `pending`.
-4. Admin duyệt yêu cầu. Nếu DNS automation đã được cấu hình, app tạo CNAME
-   DNS-only trong đúng Cloudflare zone mà người dùng đã chọn và chuyển request
+4. Admin duyệt yêu cầu. Nếu DNS automation đã được cấu hình, app tạo record chính đã chọn
+   với TTL Auto/DNS-only trong đúng Cloudflare zone mà người dùng đã chọn và chuyển request
    thành `active`.
 
 ## Hạ tầng

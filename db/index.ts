@@ -51,6 +51,8 @@ async function createRegistrySchema() {
     subdomain TEXT NOT NULL,
     parent_domain_id TEXT NOT NULL DEFAULT '${TAKESHI_DEV_MANAGED_DOMAIN_ID}' REFERENCES managed_domains(id) ON DELETE RESTRICT,
     cname_target TEXT NOT NULL,
+    record_type TEXT NOT NULL DEFAULT 'CNAME',
+    record_priority INTEGER,
     github_handle TEXT,
     email TEXT NOT NULL,
     telegram_username TEXT,
@@ -90,6 +92,8 @@ async function createRegistrySchema() {
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_status_created ON subdomain_requests (status, created_at)');
   await sql.query('CREATE INDEX IF NOT EXISTS idx_subdomain_requests_email_created ON subdomain_requests (email, created_at)');
   await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS telegram_username TEXT');
+  await sql.query("ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS record_type TEXT NOT NULL DEFAULT 'CNAME'");
+  await sql.query('ALTER TABLE subdomain_requests ADD COLUMN IF NOT EXISTS record_priority INTEGER');
   // Same additive migrations as drizzle/0006 and 0007.
   await sql.query(`ALTER TABLE subdomain_requests
     ADD COLUMN IF NOT EXISTS notification_email TEXT,
