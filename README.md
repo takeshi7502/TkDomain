@@ -7,7 +7,7 @@ Takeshi Domains, còn admin có thể mở thêm các parent domain (ví dụ
 ## Cách hoạt động
 
 1. Người dùng thêm custom domain ở dịch vụ host của họ.
-2. Họ gửi tên subdomain, loại và nội dung DNS record (A, AAAA, CNAME, TXT, MX hoặc CAA), Telegram, access key tự đặt và email nhận
+2. Họ gửi tên subdomain, loại và nội dung DNS record (A, AAAA, CNAME, TXT, MX hoặc CAA), Telegram và email nhận
    thông báo.
 3. Yêu cầu được lưu ở trạng thái `pending`.
 4. Admin duyệt yêu cầu. Nếu DNS automation đã được cấu hình, app tạo record chính đã chọn
@@ -47,10 +47,14 @@ Không bao giờ commit secret vào Git.
 
 ## Email thông báo duyệt (Resend)
 
-Email trong form đăng ký là bắt buộc và chỉ dùng cho thông báo: một thư xác nhận được
-gửi ngay sau khi request được lưu, sau đó một thư khác được gửi khi DNS đã được tạo
-và request chuyển sang `active`. Email không được dùng để đăng nhập, tìm owner hoặc
-khôi phục access key; access key cũng không bao giờ được đưa vào thư.
+Email trong form đăng ký là bắt buộc. Một thư xác nhận được gửi ngay sau khi request
+được lưu; sau khi được duyệt, thư thứ hai kèm access key do hệ thống tạo để đăng nhập
+DNS Panel. Email không được dùng trực tiếp để đăng nhập, tìm owner hoặc khôi phục key.
+Database chỉ lưu hash của key. Hệ thống có thể tạo lại đúng key từ request ID và
+`REGISTRY_ADMIN_KEY` để thử gửi lại email duyệt mà không lưu key dạng rõ.
+Trình duyệt vừa đăng ký nhận phiên tạm 7 ngày để xem hoặc hủy request đang chờ;
+phiên tạm không cấp quyền quản lý DNS sau khi duyệt. User phải dùng key trong
+email duyệt để đăng nhập DNS Panel.
 
 1. Trong Resend, thêm và xác minh sending domain `mail.takeshi.dev`.
 2. Thêm chính xác các DNS record Resend cung cấp vào Cloudflare và để **DNS only**.

@@ -1,12 +1,13 @@
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 
 import { getDb } from '@/db';
-import { managedDomains, subdomainRequests } from '@/db/schema';
+import { managedDomains, owners, subdomains, subdomainRequests } from '@/db/schema';
 import { sendApprovalEmail } from '@/lib/approval-email-message';
+import { createRequestAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
 import { enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 import { isValidNotificationEmail } from '@/lib/registry';
 
-export type ApprovalEmailResult = 'accepted' | 'not_requested' | 'not_configured' | 'failed' | 'busy' | 'manual_check' | 'inactive';
+export type ApprovalEmailResult = 'accepted' | 'not_requested' | 'not_configured' | 'failed' | 'busy' | 'manual_check' | 'key_changed' | 'inactive';
 
 /** Runs only after DNS activation commits. Failure must never roll back DNS. */
 export async function notifyApprovedRequest(requestId: string): Promise<ApprovalEmailResult> {
@@ -45,6 +46,15 @@ async function deliver(requestId: string): Promise<ApprovalEmailResult> {
   if (!isValidNotificationEmail(row.notificationEmail)) return 'failed';
   const parent = await db.query.managedDomains.findFirst({ where: eq(managedDomains.id, row.parentDomainId), columns: { hostname: true } });
   if (!parent) return 'failed';
+  const generatedKey = createRequestAccessKey(row.id);
+  const accessKey = row.requestedAccessKeyHash === hashOwnerAccessKey(generatedKey) ? generatedKey : null;
+  if (accessKey) {
+    const [activeOwner] = await db.select({ accessKeyHash: owners.accessKeyHash })
+      .from(subdomains).innerJoin(owners, eq(subdomains.ownerId, owners.id))
+      .where(eq(subdomains.requestId, row.id)).limit(1);
+    // A rotated key must never be resent as if it still grants access.
+    if (activeOwner?.accessKeyHash !== row.requestedAccessKeyHash) return 'key_changed';
+  }
 
   // Atomic lease prevents parallel approval/retry clicks from sending twice.
   const [claimed] = await db.update(subdomainRequests).set({ approvalEmailAttemptedAt: now, approvalEmailError: null })
@@ -63,7 +73,7 @@ async function deliver(requestId: string): Promise<ApprovalEmailResult> {
     approvalEmailFirstAttemptAt: sql`coalesce(${subdomainRequests.approvalEmailFirstAttemptAt}, ${now})`,
   }).where(eq(subdomainRequests.id, requestId));
   const result = await sendApprovalEmail({ requestId, email: row.notificationEmail,
-    hostname: `${row.subdomain}.${parent.hostname}`, language: row.notificationLanguage, apiKey, from });
+    hostname: `${row.subdomain}.${parent.hostname}`, language: row.notificationLanguage, accessKey, apiKey, from });
   await db.update(subdomainRequests).set(result.accepted
     ? { approvalEmailSentAt: Date.now(), approvalEmailError: null }
     : { approvalEmailError: result.error })

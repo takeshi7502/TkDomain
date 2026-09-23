@@ -21,6 +21,14 @@ export function createOwnerAccessKey() {
   return `${OWNER_ACCESS_KEY_PREFIX}k${randomBytes(12).toString('hex')}9`;
 }
 
+/** Stable per-request key so a failed approval email can be retried verbatim. */
+export function createRequestAccessKey(requestId: string) {
+  const pepper = process.env.REGISTRY_ADMIN_KEY;
+  if (!pepper) throw new Error('REGISTRY_ADMIN_KEY is unavailable.');
+  const bytes = createHmac('sha256', pepper).update(`request-access-key:v1:${requestId}`).digest('hex').slice(0, 24);
+  return `${OWNER_ACCESS_KEY_PREFIX}k${bytes}9`;
+}
+
 export function hashOwnerAccessKey(value: string) {
   return hashSecret(value);
 }

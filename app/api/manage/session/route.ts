@@ -8,6 +8,7 @@ import {
   clearPendingRequestSessionCookie,
   createOwnerSession,
   createPendingRequestSession,
+  createRequestAccessKey,
   getOwnerSession,
   getPendingRequestSession,
   hashOwnerAccessKey,
@@ -80,10 +81,16 @@ export async function GET(request: NextRequest) {
   if (!requestSession) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
 
   const requestRecord = requestSession.request;
-  if (requestRecord.status === 'active' && requestRecord.requestedAccessKeyHash) {
-    const owner = await getDb().query.owners.findFirst({ where: eq(owners.accessKeyHash, requestRecord.requestedAccessKeyHash) });
+  // Only legacy requests used a key known to the registrant before approval.
+  // A new request's temporary status session must not grant DNS access before
+  // the recipient receives the generated owner key in the approval email.
+  const legacyRequestKeyHash = requestRecord.requestedAccessKeyHash
+    && requestRecord.requestedAccessKeyHash !== hashOwnerAccessKey(createRequestAccessKey(requestRecord.id))
+    ? requestRecord.requestedAccessKeyHash : null;
+  if (requestRecord.status === 'active' && legacyRequestKeyHash) {
+    const owner = await getDb().query.owners.findFirst({ where: eq(owners.accessKeyHash, legacyRequestKeyHash) });
     if (owner?.status === 'active') {
-      const token = await createOwnerSession(owner.id, requestRecord.requestedAccessKeyHash);
+      const token = await createOwnerSession(owner.id, legacyRequestKeyHash);
       if (token) {
         await removePendingRequestSession(request);
         const response = NextResponse.json(await ownerPayload(owner));

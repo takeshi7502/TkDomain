@@ -2,8 +2,8 @@ import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
-import { managedDomains, owners, subdomainRequests } from '@/db/schema';
-import { hashOwnerAccessKey } from '@/lib/owner-auth';
+import { managedDomains, subdomainRequests } from '@/db/schema';
+import { createPendingRequestSession, createRequestAccessKey, hashOwnerAccessKey, setPendingRequestSessionCookie } from '@/lib/owner-auth';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 import { isValidSubdomain, normalizeSubdomain, validateClaim } from '@/lib/registry';
 import { notifyRequestReceived } from '@/lib/request-email';
@@ -75,7 +75,6 @@ export async function POST(request: NextRequest) {
   if ('error' in result) return NextResponse.json(result, { status: 400 });
 
   const now = Date.now();
-  const accessKeyHash = hashOwnerAccessKey(result.value.accessKey);
   const recentTelegramRequests = await db
     .select({ createdAt: subdomainRequests.createdAt })
     .from(subdomainRequests)
@@ -106,14 +105,6 @@ export async function POST(request: NextRequest) {
   });
   if (existing) return NextResponse.json({ error: 'Subdomain này đã có người đăng ký hoặc đang chờ duyệt.', field: 'subdomain' }, { status: 409 });
 
-  const keyInUse = await db.query.owners.findFirst({ where: eq(owners.accessKeyHash, accessKeyHash), columns: { id: true } });
-  if (keyInUse) return NextResponse.json({ error: 'Access key này đã được dùng. Hãy chọn key khác.', field: 'accessKey' }, { status: 409 });
-  const pendingKey = await db.query.subdomainRequests.findFirst({
-    where: and(eq(subdomainRequests.requestedAccessKeyHash, accessKeyHash), inArray(subdomainRequests.status, RESERVED_STATUSES)),
-    columns: { id: true },
-  });
-  if (pendingKey) return NextResponse.json({ error: 'Access key này đang được dùng cho một request khác. Hãy chọn key khác.', field: 'accessKey' }, { status: 409 });
-
   // Only a request that has passed validation and all conflict checks consumes
   // an IP quota. This keeps typos, already-taken names, and test retries from
   // locking a user out. The v2 key deliberately starts a fresh bucket instead
@@ -132,6 +123,7 @@ export async function POST(request: NextRequest) {
   }
 
   const id = crypto.randomUUID();
+  const accessKeyHash = hashOwnerAccessKey(createRequestAccessKey(id));
   try {
     await db.insert(subdomainRequests).values({
       id,
@@ -151,9 +143,18 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     if (error instanceof Error && /duplicate|unique/i.test(error.message)) {
-      return NextResponse.json({ error: 'Subdomain hoặc access key vừa được dùng bởi một request khác. Hãy kiểm tra lại.' }, { status: 409 });
+      return NextResponse.json({ error: 'Subdomain vừa được đăng ký bởi một request khác. Hãy kiểm tra lại.' }, { status: 409 });
     }
     throw error;
+  }
+
+  // The registering browser can still view/cancel this pending request without
+  // knowing the owner key, which is only delivered after approval.
+  let pendingSessionToken: string | null = null;
+  try {
+    pendingSessionToken = await createPendingRequestSession(id);
+  } catch {
+    console.error('Could not create pending request session', { requestId: id });
   }
 
   // Delivery failures must never invalidate a successfully stored request.
@@ -169,5 +170,7 @@ export async function POST(request: NextRequest) {
     }),
   ]);
 
-  return NextResponse.json({ ok: true, requestId: id, status: 'pending', requestEmail }, { status: 201 });
+  const response = NextResponse.json({ ok: true, requestId: id, status: 'pending', requestEmail }, { status: 201 });
+  if (pendingSessionToken) setPendingRequestSessionCookie(response, pendingSessionToken);
+  return response;
 }

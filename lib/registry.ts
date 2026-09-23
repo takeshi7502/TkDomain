@@ -18,7 +18,6 @@ export type ClaimInput = {
   telegramUsername: string;
   notificationEmail: string;
   notificationLanguage?: 'vi' | 'en';
-  accessKey: string;
   acceptedRules: boolean;
   website?: string;
 };
@@ -158,7 +157,6 @@ export function validateClaim(input: Partial<ClaimInput>, registryDomains: reado
   const subdomain = normalizeSubdomain(typeof input.subdomain === 'string' ? input.subdomain : '');
   const parentDomainId = typeof input.parentDomainId === 'string' ? input.parentDomainId.trim() : '';
   const telegramUsername = normalizeTelegramUsername(typeof input.telegramUsername === 'string' ? input.telegramUsername : '');
-  const accessKey = typeof input.accessKey === 'string' ? input.accessKey.trim() : '';
   const notificationEmail = typeof input.notificationEmail === 'string' ? input.notificationEmail.trim().toLowerCase() : '';
   const notificationLanguage = input.notificationLanguage === 'en' ? 'en' as const : 'vi' as const;
 
@@ -171,8 +169,7 @@ export function validateClaim(input: Partial<ClaimInput>, registryDomains: reado
   if (typeof input.notificationEmail !== 'string' || !isValidNotificationEmail(notificationEmail)) {
     return { error: 'Bạn cần nhập email nhận thông báo hợp lệ. Ví dụ: you@example.com.' as const, field: 'notificationEmail' as const };
   }
-  if (!isValidOwnerAccessKey(accessKey)) return { error: 'Access key phải bắt đầu bằng tk-, có phần tự đặt dài 11–29 ký tự, gồm cả chữ và số; chỉ dùng . _ - khi cần.' as const };
   if (input.acceptedRules !== true) return { error: 'Bạn cần đồng ý với registry rules.' as const };
 
-  return { value: { subdomain, parentDomainId, ...primaryRecord.value, telegramUsername, accessKey, notificationEmail, notificationLanguage } };
+  return { value: { subdomain, parentDomainId, ...primaryRecord.value, telegramUsername, notificationEmail, notificationLanguage } };
 }

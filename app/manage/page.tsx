@@ -818,7 +818,7 @@ export default function ManagePage() {
       <main className="manage-page">
         <div className="manage-shell narrow-shell">
           <header className="manage-header"><Link href="/" className="back-link">← {t('Về trang đăng ký', 'Back to registration')}</Link><UserLanguageToggle language={language} onChange={setLanguage} /></header>
-          <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>{t('Nhập access key bạn đã tự đặt khi đăng ký. Key chỉ tạo phiên trên thiết bị này.', 'Enter the access key you chose during registration. It creates a session only on this device.')}</p></div>
+          <div className="manage-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER CONSOLE</p><h1>DNS panel</h1></div><p>{t('Nhập access key trong email duyệt (hoặc key đã tự đặt trước đây). Key chỉ tạo phiên trên thiết bị này.', 'Enter the access key from your approval email (or a key you chose previously). It creates a session only on this device.')}</p></div>
           <form className="panel access-form" noValidate onSubmit={login}>
             <label htmlFor="owner-key">Owner access key
               <div className={`field-combo access-key-combo owner-key-combo${accessKeyInvalid ? ' invalid' : ''}`}>

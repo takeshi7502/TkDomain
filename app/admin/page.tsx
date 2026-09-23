@@ -7,7 +7,7 @@ import { useNoticeToast } from '@/app/components/ToastProvider';
 
 type RequestStatus = 'pending' | 'active' | 'rejected' | 'cancelled' | 'released';
 type DashboardTab = 'active-subdomains' | 'pending-requests' | 'request-log' | 'dns-log' | 'domains';
-type ApprovalEmailResult = 'accepted' | 'not_requested' | 'not_configured' | 'failed' | 'busy' | 'manual_check' | 'inactive';
+type ApprovalEmailResult = 'accepted' | 'not_requested' | 'not_configured' | 'failed' | 'busy' | 'manual_check' | 'key_changed' | 'inactive';
 
 type RequestRecord = {
   id: string;
@@ -136,6 +136,7 @@ function approvalEmailNotice(result: ApprovalEmailResult | undefined, successTex
   if (result === 'accepted') return { tone: 'success', text: `${successText} Email duyệt đã được gửi.` };
   if (result === 'not_configured') return { tone: 'error', text: `${successText} Chưa gửi email vì Vercel còn thiếu RESEND_API_KEY hoặc EMAIL_FROM.` };
   if (result === 'busy') return { tone: 'info', text: 'Email đang được xử lý hoặc vừa được thử gửi. Hãy chờ ít nhất 1 phút rồi tải lại.' };
+  if (result === 'key_changed') return { tone: 'error', text: 'Access key đã được đổi sau khi duyệt. Không gửi lại email chứa key cũ; hãy liên hệ chủ subdomain để xác minh.' };
   if (result === 'manual_check') return { tone: 'error', text: 'Lần gửi đầu đã quá lâu. Kiểm tra Resend dashboard trước khi gửi thủ công để tránh gửi trùng.' };
   if (result === 'inactive') return { tone: 'error', text: 'Chỉ có thể gửi email duyệt cho request đang active.' };
   return { tone: 'error', text: `${successText} Gửi email thất bại; có thể thử lại sau ít nhất 1 phút trong Nhật ký yêu cầu.` };
@@ -458,7 +459,9 @@ export default function AdminPage() {
       if (!response.ok) throw new Error(payload.error ?? 'Không thể cập nhật request.');
       if (payload.ownerAccessKey && payload.subdomain) {
         setAccessKey({ subdomain: payload.subdomain, value: payload.ownerAccessKey });
-        setNotice(approvalEmailNotice(payload.approvalEmail, 'DNS đã sẵn sàng. Gửi access key dưới đây riêng cho chủ subdomain.'));
+        setNotice(action === 'reset_access'
+          ? { tone: 'success', text: 'Access key mới nằm bên dưới. Gửi riêng cho chủ subdomain.' }
+          : approvalEmailNotice(payload.approvalEmail, 'DNS đã sẵn sàng. Access key nằm bên dưới để admin xử lý nếu email chưa đến.'));
       } else {
         const successText = action === 'reject'
           ? 'Đã từ chối request.'
@@ -466,7 +469,7 @@ export default function AdminPage() {
             ? 'Đã xử lý yêu cầu gửi email duyệt.'
             : payload.accessKeyProvided
               ? 'DNS đã sẵn sàng. Chủ subdomain sẽ dùng access key đã tự đặt khi đăng ký.'
-              : 'Đã cập nhật request.';
+              : 'DNS đã sẵn sàng.';
         setNotice(action === 'reject' || action === 'reset_access'
           ? { tone: 'success', text: successText }
           : approvalEmailNotice(payload.approvalEmail, successText));

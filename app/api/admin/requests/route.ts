@@ -6,7 +6,7 @@ import { dnsEvents, dnsRecords, managedDomains, owners, ownerSessions, subdomain
 import { createCloudflareRecord, deleteCloudflareRecord, findCloudflareRecordByComment } from '@/lib/cloudflare';
 import { isAdminAuthorized } from '@/lib/admin-auth';
 import { fullRecordName, validateDnsRecord } from '@/lib/dns';
-import { createOwnerAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
+import { createOwnerAccessKey, createRequestAccessKey, hashOwnerAccessKey } from '@/lib/owner-auth';
 import { notifyApprovedRequest } from '@/lib/approval-email';
 import { enforceRegistryRateLimit } from '@/lib/rate-limit';
 
@@ -257,6 +257,8 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: `Record chính không hợp lệ: ${initialRecordResult.error}` }, { status: 409 });
   }
   const initialRecord = initialRecordResult.value;
+  const requestAccessKey = createRequestAccessKey(claimedRequest.id);
+  const systemGeneratedKey = claimedRequest.requestedAccessKeyHash === hashOwnerAccessKey(requestAccessKey);
   const cloudflareComment = `Takeshi Domains request ${claimedRequest.id}`;
   let cloudflareRecordId: string;
   let cloudflareRecordCreatedHere = false;
@@ -283,7 +285,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Cloudflare DNS rejected this record.' }, { status: 502 });
   }
 
-  let accessKey: string | null = null;
+  let accessKey: string | null = systemGeneratedKey ? requestAccessKey : null;
   try {
     await db.transaction(async (tx) => {
       let owner: typeof owners.$inferSelect;
@@ -380,8 +382,8 @@ export async function PATCH(request: NextRequest) {
     status: 'active',
     approvalEmail,
     recordId: cloudflareRecordId,
-    ownerAccessKey: accessKey,
-    accessKeyProvided: Boolean(claimedRequest.requestedAccessKeyHash),
+    ownerAccessKey: systemGeneratedKey && approvalEmail === 'accepted' ? null : accessKey,
+    accessKeyProvided: Boolean(claimedRequest.requestedAccessKeyHash) && !systemGeneratedKey,
     subdomain: `${claimedRequest.subdomain}.${parentDomain.hostname}`,
   });
 }

@@ -2,10 +2,9 @@
 
 import { FocusEvent, FormEvent, useEffect, useState } from 'react';
 
-import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
 import { useToast } from '@/app/components/ToastProvider';
 import { UserLanguageToggle, useUserLanguage } from '@/app/components/UserLanguageToggle';
-import { isValidNotificationEmail, isValidOwnerAccessKey, isValidSubdomain, isValidTelegramUsername, REGISTRATION_RECORD_TYPES, type RegistrationRecordType, validatePrimaryRecord } from '@/lib/registry';
+import { isValidNotificationEmail, isValidSubdomain, isValidTelegramUsername, REGISTRATION_RECORD_TYPES, type RegistrationRecordType, validatePrimaryRecord } from '@/lib/registry';
 
 type SubmissionState =
   | { type: 'idle' }
@@ -13,7 +12,7 @@ type SubmissionState =
   | { type: 'error'; message: string }
   | { type: 'success'; requestId: string; requestEmail: 'accepted' | 'not_configured' | 'failed' | 'busy' };
 type AvailabilityState = 'idle' | 'checking' | 'available' | 'taken' | 'error';
-type FieldName = 'subdomain' | 'parentDomain' | 'recordContent' | 'recordPriority' | 'telegramUsername' | 'notificationEmail' | 'accessKey' | 'rules';
+type FieldName = 'subdomain' | 'parentDomain' | 'recordContent' | 'recordPriority' | 'telegramUsername' | 'notificationEmail' | 'rules';
 type FieldState = { kind: 'idle' | 'valid' | 'invalid'; message: string };
 type RegistryDomain = { id: string; hostname: string };
 
@@ -79,7 +78,6 @@ const emptyTouched: Record<FieldName, boolean> = {
   recordPriority: false,
   telegramUsername: false,
   notificationEmail: false,
-  accessKey: false,
   rules: false,
 };
 
@@ -109,8 +107,6 @@ export default function Home() {
   const [recordPriority, setRecordPriority] = useState('');
   const [telegramUsername, setTelegramUsername] = useState('');
   const [notificationEmail, setNotificationEmail] = useState('');
-  const [accessKeySuffix, setAccessKeySuffix] = useState('');
-  const [showAccessKey, setShowAccessKey] = useState(false);
   const [acceptedRules, setAcceptedRules] = useState(false);
   const [website, setWebsite] = useState('');
   const [submission, setSubmission] = useState<SubmissionState>({ type: 'idle' });
@@ -120,7 +116,6 @@ export default function Home() {
   const [requiredOnSubmit, setRequiredOnSubmit] = useState(emptyTouched);
   const [serverErrors, setServerErrors] = useState<Partial<Record<FieldName, string>>>({});
 
-  const accessKey = `tk-${accessKeySuffix}`;
   const selectedParentDomain = registryDomains.find((domain) => domain.id === parentDomainId) ?? null;
   const selectedParentDomainName = selectedParentDomain?.hostname ?? '';
   const t = <T,>(vi: T, en: T): T => language === 'en' ? en : vi;
@@ -217,13 +212,6 @@ export default function Home() {
       isValidNotificationEmail(notificationEmail.trim()),
       t('✓ Email đúng định dạng.', '✓ Valid email format.'),
       !notificationEmail.trim() ? t('Nhập email nhận thông báo.', 'Enter a notification email.') : t('Nhập email hợp lệ, ví dụ you@example.com.', 'Enter a valid email, for example you@example.com.'),
-    )),
-    accessKey: withServerError('accessKey', requiredFieldState(
-      'accessKey',
-      Boolean(accessKeySuffix.trim()),
-      isValidOwnerAccessKey(accessKey),
-      t('✓ Access key đúng định dạng.', '✓ Valid access key format.'),
-      !accessKeySuffix.trim() ? t('Nhập phần access key sau tk-.', 'Enter the access-key part after tk-.') : t('Phần sau tk- phải dài 11–29 ký tự, có cả chữ và số; chỉ dùng thêm . _ - khi cần.', 'The part after tk- must be 11–29 characters, include letters and numbers, and may use . _ -.'),
     )),
     rules: withServerError('rules', requiredFieldState(
       'rules',
@@ -354,14 +342,13 @@ export default function Home() {
 
   async function submitClaim(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setTouched({ subdomain: true, parentDomain: true, recordContent: true, recordPriority: recordType === 'MX', telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
-    setRequiredOnSubmit({ subdomain: true, parentDomain: true, recordContent: true, recordPriority: recordType === 'MX', telegramUsername: true, notificationEmail: true, accessKey: true, rules: true });
+    setTouched({ subdomain: true, parentDomain: true, recordContent: true, recordPriority: recordType === 'MX', telegramUsername: true, notificationEmail: true, rules: true });
+    setRequiredOnSubmit({ subdomain: true, parentDomain: true, recordContent: true, recordPriority: recordType === 'MX', telegramUsername: true, notificationEmail: true, rules: true });
     const localFieldsAreValid = Boolean(selectedParentDomain)
       && isValidSubdomain(subdomain)
       && 'value' in primaryRecordValidation
       && isValidTelegramUsername(telegramUsername)
       && isValidNotificationEmail(notificationEmail.trim())
-      && isValidOwnerAccessKey(accessKey)
       && acceptedRules;
     if (!localFieldsAreValid) {
       setSubmission({ type: 'error', message: t('Hãy sửa các trường được đánh dấu đỏ trước khi gửi.', 'Fix the fields marked in red before sending.') });
@@ -379,7 +366,7 @@ export default function Home() {
       const response = await fetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subdomain, parentDomainId, recordType, recordContent, recordPriority: recordType === 'MX' && recordPriority !== '' ? Number(recordPriority) : null, telegramUsername, notificationEmail, notificationLanguage: language, accessKey, acceptedRules, website }),
+        body: JSON.stringify({ subdomain, parentDomainId, recordType, recordContent, recordPriority: recordType === 'MX' && recordPriority !== '' ? Number(recordPriority) : null, telegramUsername, notificationEmail, notificationLanguage: language, acceptedRules, website }),
       });
       const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId' | 'recordType'; requestId?: string; requestEmail?: 'accepted' | 'not_configured' | 'failed' | 'busy'; retryAfterSeconds?: number };
       if (!response.ok || !payload.requestId) {
@@ -455,21 +442,15 @@ export default function Home() {
               {displayHint('recordPriority', t('0–65535, số thấp hơn được ưu tiên trước.', '0–65535; lower numbers are preferred.'))}
             </label>}
           </div>
-          <div className="form-pair">
-            <label htmlFor="telegram-username">Telegram username
-              <input id="telegram-username" className={inputClass('telegramUsername')} placeholder="username" value={telegramUsername} onChange={(event) => { setTelegramUsername(event.target.value.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32)); resetFieldFeedback('telegramUsername'); }} onBlur={() => markTouched('telegramUsername')} autoComplete="username" required />
-              {displayHint('telegramUsername', t('Nhập username, không cần dấu @.', 'Enter your username without @.'))}
-            </label>
-            <label htmlFor="access-key">Access key
-              <div className={inputClass('accessKey', 'field-combo access-key-combo')}><b>tk-</b><input id="access-key" type={showAccessKey ? 'text' : 'password'} placeholder="your-key-part" value={accessKeySuffix} onChange={(event) => { setAccessKeySuffix(event.target.value.replace(/[^a-z0-9._-]/gi, '').slice(0, 29)); resetFieldFeedback('accessKey'); }} onBlur={() => markTouched('accessKey')} autoComplete="new-password" required /><HoldToRevealButton label="access key" onRevealChange={setShowAccessKey} /></div>
-              {displayHint('accessKey', t('Phần bạn đặt dài 11–29 ký tự, bắt buộc có cả chữ và số; chỉ dùng thêm . _ - khi cần.', 'Use 11–29 characters with letters and numbers; . _ - are optional.'))}
-            </label>
-          </div>
-          <label htmlFor="notification-email">{t('Email nhận thông báo', 'Notification email')}
+          <label htmlFor="telegram-username">Telegram username
+            <input id="telegram-username" className={inputClass('telegramUsername')} placeholder="username" value={telegramUsername} onChange={(event) => { setTelegramUsername(event.target.value.replace(/^@/, '').replace(/[^a-z0-9_]/gi, '').slice(0, 32)); resetFieldFeedback('telegramUsername'); }} onBlur={() => markTouched('telegramUsername')} autoComplete="username" required />
+            {displayHint('telegramUsername', t('Nhập username, không cần dấu @.', 'Enter your username without @.'))}
+          </label>
+          <label htmlFor="notification-email">{t('Email nhận thông báo và access key khi được duyệt', 'Email for notifications and your access key after approval')}
             <input id="notification-email" className={inputClass('notificationEmail')} type="email" inputMode="email" autoComplete="email" maxLength={254} placeholder="you@example.com" value={notificationEmail}
               aria-invalid={touched.notificationEmail && fieldState.notificationEmail.kind === 'invalid'} aria-describedby="notification-email-hint"
               onChange={(event) => { setNotificationEmail(event.target.value); resetFieldFeedback('notificationEmail'); }} onBlur={() => markTouched('notificationEmail')} required />
-            <div id="notification-email-hint">{displayHint('notificationEmail', t('Nhận thư xác nhận sau khi được duyệt.', 'Required · receive a confirmation now and another email after approval.'))}</div>
+            <div id="notification-email-hint">{displayHint('notificationEmail', t('Nhận email xác nhận ngay và access key sau khi được duyệt.', 'Receive a confirmation now and your access key after approval.'))}</div>
           </label>
           <label className="check-row" htmlFor="accepted-rules"><input id="accepted-rules" className={touched.rules && fieldState.rules.kind !== 'idle' ? fieldState.rules.kind : ''} type="checkbox" checked={acceptedRules} onChange={(event) => { setAcceptedRules(event.target.checked); resetFieldFeedback('rules'); }} onBlur={() => markTouched('rules')} required /><span>{t('Tôi đồng ý dùng subdomain đúng mục đích và tuân thủ quy định.', 'I agree to use this subdomain appropriately and follow the rules.')}</span></label>
           {touched.rules && fieldState.rules.kind === 'invalid' && <small className="field-bad rules-feedback">{fieldState.rules.message}</small>}
