@@ -439,7 +439,7 @@ export default function Home() {
             </label>
             {recordType === 'MX' && <label htmlFor="record-priority">{t('Priority', 'Priority')}
               <input id="record-priority" className={inputClass('recordPriority')} type="number" inputMode="numeric" min="0" max="65535" placeholder="10" value={recordPriority} onChange={(event) => { setRecordPriority(event.target.value.replace(/\D/g, '').slice(0, 5)); resetFieldFeedback('recordPriority'); }} onBlur={() => markTouched('recordPriority')} required />
-              {displayHint('recordPriority', t('0–65535, số thấp hơn được ưu tiên trước.', '0–65535; lower numbers are preferred.'))}
+              {displayHint('recordPriority', t('0–65535', '0–65535'))}
             </label>}
           </div>
           <label htmlFor="telegram-username">Telegram username
