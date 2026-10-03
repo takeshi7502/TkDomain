@@ -1,3 +1,4 @@
+import { readJson, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getOwnerSession } from '@/lib/owner-auth';
@@ -109,10 +110,8 @@ export async function DELETE(request: NextRequest) {
 
   let body: { code?: unknown };
   try {
-    body = await request.json() as typeof body;
-  } catch {
-    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
-  }
+    body = await readJson(request) as typeof body;
+  } catch (error) { return errorResponse(error); }
   const code = typeof body.code === 'string' ? body.code.trim() : '';
   if (!/^\d{6}$/.test(code)) return NextResponse.json({ error: 'Mã Telegram phải gồm 6 chữ số.' }, { status: 400 });
 

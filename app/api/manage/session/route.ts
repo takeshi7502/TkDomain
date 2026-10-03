@@ -1,3 +1,4 @@
+import { readJson, errorResponse } from '@/lib/http';
 import { desc, eq } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -114,8 +115,8 @@ export async function POST(request: NextRequest) {
   const limit = await enforceRegistryRateLimit(request, 'owner-login', 8, 15 * 60_000);
   if (!limit.allowed) return NextResponse.json({ error: 'Too many access-key attempts. Please try again later.' }, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } });
   let body: { accessKey?: string };
-  try { body = await request.json() as { accessKey?: string }; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
-  const accessKey = body.accessKey?.trim();
+  try { body = await readJson(request) as { accessKey?: string }; } catch (error) { return errorResponse(error); }
+  const accessKey = (typeof body.accessKey === 'string' ? body.accessKey.trim() : '');
   if (!accessKey || accessKey.length > 200) return NextResponse.json({ error: 'Access key không hợp lệ.' }, { status: 400 });
 
   await ensureRegistrySchema();

@@ -1,3 +1,4 @@
+import { readJson, errorResponse } from '@/lib/http';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -27,7 +28,7 @@ export async function DELETE(request: NextRequest) {
   const hostname = `${requestRecord.subdomain}.${parentDomain?.hostname ?? BASE_DOMAIN}`;
 
   let body: { confirmation?: string };
-  try { body = await request.json() as { confirmation?: string }; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
+  try { body = await readJson(request) as { confirmation?: string }; } catch (error) { return errorResponse(error); }
   if (body.confirmation !== hostname) return NextResponse.json({ error: `Nhập chính xác ${hostname} để xác nhận hủy.` }, { status: 400 });
 
   const now = Date.now();

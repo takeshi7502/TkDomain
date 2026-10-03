@@ -6,7 +6,7 @@ import { sendRequestReceivedEmail } from '@/lib/approval-email-message';
 import { enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 import { isValidNotificationEmail } from '@/lib/registry';
 
-export type RequestEmailResult = 'accepted' | 'not_configured' | 'failed' | 'busy';
+export type RequestEmailResult = 'accepted' | 'not_configured' | 'failed' | 'busy' | 'manual_check';
 
 /** Sends only after the request insert commits. A mail failure never removes the request. */
 export async function notifyRequestReceived(requestId: string): Promise<RequestEmailResult> {
@@ -23,6 +23,8 @@ async function deliver(requestId: string): Promise<RequestEmailResult> {
   const row = await db.query.subdomainRequests.findFirst({ where: eq(subdomainRequests.id, requestId) });
   if (!row || !row.notificationEmail || !isValidNotificationEmail(row.notificationEmail)) return 'failed';
   if (row.requestEmailSentAt) return 'accepted';
+  if (row.requestEmailAttemptedAt && row.requestEmailAttemptedAt < Date.now() - 23 * 60 * 60_000
+    && (!row.requestEmailError || row.requestEmailError === 'delivery_unknown' || /^provider_5\d\d$/.test(row.requestEmailError))) return 'manual_check';
 
   const apiKey = process.env.RESEND_API_KEY?.trim();
   const from = process.env.EMAIL_FROM?.trim();

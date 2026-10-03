@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import {
   consumeTelegramLinkToken,
-  hasProcessedTelegramWebhookUpdate,
+  claimTelegramWebhookUpdate,
   isTelegramWebhookSecretValid,
-  markTelegramWebhookUpdateProcessed,
+  refreshVerifiedTelegramProfile,
   sendTelegramMessage,
   type TelegramIdentity,
 } from '@/lib/telegram';
 import { isValidTelegramUsername, normalizeTelegramUsername } from '@/lib/registry';
+import { readJson, errorResponse } from '@/lib/http';
+import { enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -110,23 +112,34 @@ export async function POST(request: NextRequest) {
 
   let payload: unknown;
   try {
-    payload = await request.json();
-  } catch {
-    return new NextResponse('Invalid update', { status: 400 });
+    payload = await readJson(request);
+  } catch (error) {
+    return errorResponse(error);
   }
 
   const update = parseDirectStartUpdate(payload);
   // Deliberately acknowledge unsupported updates. Telegram will otherwise
   // retry messages from groups or normal chat text indefinitely.
-  if (!update || !update.token) return NextResponse.json({ ok: true });
+  if (!update) return NextResponse.json({ ok: true });
 
   const updateId = safeUpdateId(payload);
-  if (updateId && await hasProcessedTelegramWebhookUpdate(updateId)) return NextResponse.json({ ok: true });
+  if (!updateId) return new NextResponse('Invalid update ID', { status: 400 });
 
   try {
-    const result = await consumeTelegramLinkToken(update.token, update.identity);
+    const [sender, global] = await Promise.all([
+      enforceRegistryScopedRateLimit('telegram-start', update.identity.telegramUserId, 6, 60_000),
+      enforceRegistryScopedRateLimit('telegram-start-global', 'registry', 60, 60_000),
+    ]);
+    if (!sender.allowed || !global.allowed) return NextResponse.json({ ok: true });
+    if (!update.token) {
+      await refreshVerifiedTelegramProfile(update.identity);
+      return NextResponse.json({ ok: true });
+    }
+    const claim = await claimTelegramWebhookUpdate(updateId);
+    if (claim.status === 'done') return NextResponse.json({ ok: true });
+    if (claim.status === 'busy') return new NextResponse('Retry later', { status: 503, headers: { 'Retry-After': '120' } });
+    const result = await consumeTelegramLinkToken(update.token, update.identity, { updateId, leaseToken: claim.leaseToken! });
     await sendTelegramMessage(update.identity.chatId, linkReply(result.status));
-    if (updateId) await markTelegramWebhookUpdateProcessed(updateId);
   } catch {
     // Do not include errors, the request body, token, or chat identifiers in
     // logs. A 500 makes Telegram retry a transient database failure safely.

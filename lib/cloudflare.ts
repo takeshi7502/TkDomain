@@ -12,6 +12,10 @@ type CloudflareRecord = {
   content?: string;
 };
 
+export class CloudflareError extends Error {
+  constructor(message: string, public definitive: boolean) { super(message); }
+}
+
 export type CloudflareZone = {
   id: string;
   name: string;
@@ -56,6 +60,7 @@ function recordPayload(name: string, record: ValidatedDnsRecord, comment: string
 async function callCloudflare(path: string, method: 'POST' | 'PUT' | 'DELETE', body?: object, explicitZoneId?: string) {
   const { token, zoneId } = getCloudflareConfig(explicitZoneId);
   const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}${path}`, {
+    signal: AbortSignal.timeout(10_000),
     method,
     headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -64,7 +69,7 @@ async function callCloudflare(path: string, method: 'POST' | 'PUT' | 'DELETE', b
   const recordResult = Array.isArray(payload.result) ? undefined : payload.result as CloudflareRecord | undefined;
   if (method === 'DELETE' && response.status === 404) return payload;
   if (!response.ok || !payload.success || (method !== 'DELETE' && !recordResult?.id)) {
-    throw new Error(payload.errors?.[0]?.message ?? 'Cloudflare DNS rejected this record.');
+    throw new CloudflareError(payload.errors?.[0]?.message ?? 'Cloudflare DNS rejected this record.', response.status >= 400 && response.status < 500 && response.status !== 429);
   }
   return payload;
 }
@@ -83,6 +88,7 @@ export async function findCloudflareRecordByComment(name: string, record: Valida
   const { token, zoneId } = getCloudflareConfig(explicitZoneId);
   const query = new URLSearchParams({ name, type: record.recordType });
   const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?${query.toString()}`, {
+    signal: AbortSignal.timeout(10_000),
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });
@@ -90,7 +96,9 @@ export async function findCloudflareRecordByComment(name: string, record: Valida
   if (!response.ok || !payload.success || !Array.isArray(payload.result)) {
     throw new Error(payload.errors?.[0]?.message ?? 'Cloudflare DNS lookup failed.');
   }
-  return (payload.result as CloudflareRecord[]).find((item) => item.comment === comment && item.content === record.content)?.id ?? null;
+  // Name/type are filtered by the provider and the unique operation/request
+  // comment is our identity. TXT/CAA content may be normalized by Cloudflare.
+  return (payload.result as CloudflareRecord[]).find((item) => item.comment === comment)?.id ?? null;
 }
 
 export async function updateCloudflareRecord(recordId: string, name: string, record: ValidatedDnsRecord, comment: string, zoneId?: string) {
@@ -124,6 +132,7 @@ export async function findCloudflareZoneByName(domain: string): Promise<Cloudfla
   const token = getCloudflareToken();
   const query = new URLSearchParams({ name, status: 'active', per_page: '50' });
   const response = await fetch(`https://api.cloudflare.com/client/v4/zones?${query.toString()}`, {
+    signal: AbortSignal.timeout(10_000),
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   });

@@ -72,8 +72,24 @@ async function deliver(requestId: string): Promise<ApprovalEmailResult> {
   await db.update(subdomainRequests).set({
     approvalEmailFirstAttemptAt: sql`coalesce(${subdomainRequests.approvalEmailFirstAttemptAt}, ${now})`,
   }).where(eq(subdomainRequests.id, requestId));
-  const result = await sendApprovalEmail({ requestId, email: row.notificationEmail,
-    hostname: `${row.subdomain}.${parent.hostname}`, language: row.notificationLanguage, accessKey, apiKey, from });
+  // Serialize delivery of a generated key with key rotation. A stale key must
+  // never be presented as the current one after a reset committed.
+  const result = await db.transaction(async (tx) => {
+    if (accessKey) {
+      const [domain] = await tx.select({ ownerId: subdomains.ownerId }).from(subdomains).where(eq(subdomains.requestId, row.id)).limit(1);
+      if (!domain) return null;
+      const [owner] = await tx.select({ accessKeyHash: owners.accessKeyHash }).from(owners).where(eq(owners.id, domain.ownerId)).for('update');
+      if (owner?.accessKeyHash !== row.requestedAccessKeyHash) return null;
+      const [current] = await tx.select({ status: subdomainRequests.status }).from(subdomainRequests).where(eq(subdomainRequests.id, row.id));
+      if (current?.status !== 'active') return null;
+    }
+    return sendApprovalEmail({ requestId, email: row.notificationEmail!,
+      hostname: `${row.subdomain}.${parent.hostname}`, language: row.notificationLanguage, accessKey, apiKey, from });
+  });
+  if (!result) {
+    await db.update(subdomainRequests).set({ approvalEmailError: 'key_changed' }).where(eq(subdomainRequests.id, requestId));
+    return 'key_changed';
+  }
   await db.update(subdomainRequests).set(result.accepted
     ? { approvalEmailSentAt: Date.now(), approvalEmailError: null }
     : { approvalEmailError: result.error })

@@ -108,7 +108,7 @@ export function validatePrimaryRecord(
   if (recordType === 'TXT' && /[\r\n]/.test(recordContent)) {
     return { error: 'TXT record chỉ được nhập trên một dòng.', field: 'recordContent' };
   }
-  if (recordType === 'CAA' && !/^\d{1,3}\s+(issue|issuewild|iodef)\s+.+$/i.test(recordContent)) {
+  if (recordType === 'CAA' && (!/^\d{1,3}\s+(issue|issuewild|iodef)\s+.+$/i.test(recordContent) || Number(recordContent.split(/\s+/)[0]) > 255)) {
     return { error: 'CAA dùng dạng: 0 issue letsencrypt.org', field: 'recordContent' };
   }
 

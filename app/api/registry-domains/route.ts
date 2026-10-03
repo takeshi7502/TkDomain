@@ -15,6 +15,6 @@ export async function GET() {
 
   return NextResponse.json(
     { domains },
-    { headers: { 'Cache-Control': 'no-store, max-age=0' } },
+    { headers: { 'Cache-Control': 'public, max-age=0, s-maxage=30, stale-while-revalidate=30' } },
   );
 }

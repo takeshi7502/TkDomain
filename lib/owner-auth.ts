@@ -6,14 +6,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ensureRegistrySchema, getDb } from '@/db';
 import { owners, ownerSessions, pendingRequestSessions, subdomainRequests } from '@/db/schema';
 import { OWNER_ACCESS_KEY_PREFIX } from '@/lib/registry';
+import { authSecret } from '@/lib/auth-secret';
 
-const OWNER_COOKIE_NAME = 'takeshi_owner_session';
-const PENDING_REQUEST_COOKIE_NAME = 'takeshi_pending_request_session';
+const OWNER_COOKIE_NAME = process.env.NODE_ENV === 'production' ? '__Host-takeshi_owner_session' : 'takeshi_owner_session';
+const PENDING_REQUEST_COOKIE_NAME = process.env.NODE_ENV === 'production' ? '__Host-takeshi_pending_request_session' : 'takeshi_pending_request_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
 function hashSecret(value: string) {
-  const pepper = process.env.REGISTRY_ADMIN_KEY;
-  if (!pepper) throw new Error('REGISTRY_ADMIN_KEY is unavailable.');
+  const pepper = authSecret();
   return createHmac('sha256', pepper).update(value).digest('hex');
 }
 
@@ -23,8 +23,7 @@ export function createOwnerAccessKey() {
 
 /** Stable per-request key so a failed approval email can be retried verbatim. */
 export function createRequestAccessKey(requestId: string) {
-  const pepper = process.env.REGISTRY_ADMIN_KEY;
-  if (!pepper) throw new Error('REGISTRY_ADMIN_KEY is unavailable.');
+  const pepper = authSecret();
   const bytes = createHmac('sha256', pepper).update(`request-access-key:v1:${requestId}`).digest('hex').slice(0, 24);
   return `${OWNER_ACCESS_KEY_PREFIX}k${bytes}9`;
 }
@@ -89,7 +88,7 @@ export function clearOwnerSessionCookie(response: NextResponse) {
 
 export async function getOwnerSession(request: NextRequest) {
   const token = request.cookies.get(OWNER_COOKIE_NAME)?.value;
-  if (!token) return null;
+  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
   await ensureRegistrySchema();
   const now = Date.now();
   const rows = await getDb()
@@ -110,16 +109,21 @@ export async function removeOwnerSession(request: NextRequest) {
 
 export async function createPendingRequestSession(requestId: string) {
   await ensureRegistrySchema();
+  const session = createPendingRequestSessionRecord(requestId);
+  await getDb().insert(pendingRequestSessions).values(session.record);
+  return session.token;
+}
+
+export function createPendingRequestSessionRecord(requestId: string) {
   const rawToken = randomBytes(32).toString('base64url');
   const now = Date.now();
-  await getDb().insert(pendingRequestSessions).values({
+  return { token: rawToken, record: {
     id: crypto.randomUUID(),
     requestId,
     tokenHash: hashSecret(rawToken),
     createdAt: now,
     expiresAt: now + SESSION_MAX_AGE_SECONDS * 1_000,
-  });
-  return rawToken;
+  } };
 }
 
 export function setPendingRequestSessionCookie(response: NextResponse, token: string) {
@@ -138,7 +142,7 @@ export function clearPendingRequestSessionCookie(response: NextResponse) {
 
 export async function getPendingRequestSession(request: NextRequest) {
   const token = request.cookies.get(PENDING_REQUEST_COOKIE_NAME)?.value;
-  if (!token) return null;
+  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
   await ensureRegistrySchema();
   const now = Date.now();
   const rows = await getDb()

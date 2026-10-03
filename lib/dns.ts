@@ -53,7 +53,19 @@ function validTtl(value: number) {
   return value === 1 || (Number.isInteger(value) && value >= 60 && value <= 86_400);
 }
 
-export function validateDnsRecord(input: DnsRecordInput): { value: ValidatedDnsRecord } | { error: string } {
+export function validateDnsRecord(input: unknown): { value: ValidatedDnsRecord } | { error: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { error: 'Record không hợp lệ.' };
+  const raw = input as Record<string, unknown>;
+  if (typeof raw.recordType !== 'string' || typeof raw.recordName !== 'string' || typeof raw.content !== 'string'
+    || (raw.ttl !== undefined && typeof raw.ttl !== 'number')
+    || (raw.proxied !== undefined && typeof raw.proxied !== 'boolean')
+    || (raw.priority !== undefined && raw.priority !== null && typeof raw.priority !== 'number')) {
+    return { error: 'Dữ liệu record không đúng định dạng.' };
+  }
+  return validateTypedDnsRecord(raw as DnsRecordInput);
+}
+
+function validateTypedDnsRecord(input: DnsRecordInput): { value: ValidatedDnsRecord } | { error: string } {
   const recordType = input.recordType;
   const recordName = normalizeRecordName(input.recordName);
   const content = input.content.trim();
@@ -68,6 +80,7 @@ export function validateDnsRecord(input: DnsRecordInput): { value: ValidatedDnsR
   if (!isValidRecordName(recordName)) return { error: 'Tên record không hợp lệ.' };
   if (!validTtl(ttl)) return { error: 'TTL phải là Auto hoặc từ 60 đến 86400 giây.' };
   if (content.length === 0 || content.length > 2_048) return { error: 'Giá trị record không hợp lệ.' };
+  if (/[\u0000\r\n]/.test(content)) return { error: 'Giá trị record phải nằm trên một dòng.' };
 
   if (recordType === 'A' && isIP(content) !== 4) return { error: 'A record cần địa chỉ IPv4 hợp lệ.' };
   if (recordType === 'AAAA' && isIP(content) !== 6) return { error: 'AAAA record cần địa chỉ IPv6 hợp lệ.' };
@@ -78,7 +91,7 @@ export function validateDnsRecord(input: DnsRecordInput): { value: ValidatedDnsR
     return { error: 'MX record cần priority từ 0 đến 65535.' };
   }
   if (recordType !== 'MX' && priority !== null) return { error: 'Chỉ MX record dùng priority.' };
-  if (recordType === 'CAA' && !/^\d{1,3}\s+(issue|issuewild|iodef)\s+.+$/i.test(content)) {
+  if (recordType === 'CAA' && (!/^\d{1,3}\s+(issue|issuewild|iodef)\s+.+$/i.test(content) || Number(content.split(/\s+/)[0]) > 255)) {
     return { error: 'CAA dùng dạng: 0 issue letsencrypt.org' };
   }
 
@@ -87,7 +100,7 @@ export function validateDnsRecord(input: DnsRecordInput): { value: ValidatedDnsR
       recordType,
       recordName,
       content: recordType === 'CNAME' || recordType === 'MX' ? normalizeHostname(content) : content,
-      ttl,
+      ttl: proxied ? 1 : ttl,
       proxied,
       priority: recordType === 'MX' ? priority : null,
     },

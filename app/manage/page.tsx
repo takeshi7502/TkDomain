@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 
 import { HoldToRevealButton } from '@/app/components/HoldToRevealButton';
@@ -10,7 +10,7 @@ import { isValidOwnerAccessKey, isValidTelegramUsername, OWNER_ACCESS_KEY_PREFIX
 
 type RecordType = 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'MX' | 'CAA';
 type DnsRecord = { id: string; recordType: RecordType; recordName: string; content: string; ttl: number; proxied: boolean; priority: number | null; isPrimary: boolean };
-type ManagedSubdomain = { id: string; label: string; parentDomain: string; status: string; records: DnsRecord[] };
+type ManagedSubdomain = { id: string; label: string; parentDomain: string; status: string; operationPending?: boolean; records: DnsRecord[] };
 type OwnerSession = {
   type: 'owner';
   owner: {
@@ -50,6 +50,10 @@ type RecoveryStage = 'lookup' | 'send-code' | 'verify-code' | 'reset-key';
 const proxyable = new Set<RecordType>(['A', 'AAAA', 'CNAME']);
 const blankRecord = (): EditableRecord => ({ recordType: 'A', recordName: '@', content: '', ttl: 1, proxied: false, priority: '' });
 
+async function panelFetch(url: string, init?: RequestInit) {
+  return fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(25_000) });
+}
+
 function recordHost(label: string, parentDomain: string, name: string) {
   return name === '@' ? `${label}.${parentDomain}` : `${name}.${label}.${parentDomain}`;
 }
@@ -78,6 +82,8 @@ function isValidRecoveryIdentifier(value: string) {
 
 export default function ManagePage() {
   const { language, setLanguage } = useUserLanguage();
+  const mutationKey = useRef<{ body: string; id: string } | null>(null);
+  const mutationBusy = useRef(false);
   const [session, setSession] = useState<SessionData | null>(null);
   const [subdomains, setSubdomains] = useState<ManagedSubdomain[]>([]);
   const [accessKey, setAccessKey] = useState('');
@@ -131,6 +137,7 @@ export default function ManagePage() {
   useNoticeToast(accessKeyChangeNotice);
 
   const selected = useMemo(() => subdomains.find((item) => item.id === selectedId) ?? subdomains[0] ?? null, [selectedId, subdomains]);
+  const dnsBusy = Boolean(selected?.operationPending || selected?.status === 'deleting');
   const primaryRecord = useMemo(() => selected?.records.find((item) => item.isPrimary) ?? null, [selected]);
   const secondaryRecords = useMemo(() => selected?.records.filter((item) => !item.isPrimary) ?? [], [selected]);
   const confirmationTarget = selected ? `${selected.label}.${selected.parentDomain}` : '';
@@ -147,8 +154,9 @@ export default function ManagePage() {
 
   async function loadPanel(): Promise<SessionData | null> {
     try {
-      const sessionResponse = await fetch('/api/manage/session');
+      const sessionResponse = await panelFetch('/api/manage/session');
       if (!sessionResponse.ok) {
+        if (sessionResponse.status !== 401) throw new Error('Session unavailable');
         setSession(null);
         setSubdomains([]);
         setSelectedId('');
@@ -166,7 +174,7 @@ export default function ManagePage() {
         setTelegramLinkExpiresAt(null);
       }
 
-      const recordsResponse = await fetch('/api/manage/records');
+      const recordsResponse = await panelFetch('/api/manage/records');
       const recordsPayload = await recordsResponse.json() as { subdomains?: ManagedSubdomain[]; error?: string };
       if (!recordsResponse.ok || !recordsPayload.subdomains) {
         setNotice({ tone: 'error', text: recordsPayload.error ?? 'Không thể tải DNS records.' });
@@ -188,14 +196,36 @@ export default function ManagePage() {
     return () => window.clearTimeout(initialLoad);
   }, []);
 
+  // Poll only during a durable DNS operation; pause in background tabs.
+  const hasPendingDns = subdomains.some((domain) => domain.operationPending || domain.status === 'deleting');
+  useEffect(() => {
+    if (!hasPendingDns) return;
+    let inFlight = false, stopped = false;
+    const poll = async () => {
+      if (inFlight || stopped || document.hidden || mutationBusy.current) return;
+      inFlight = true;
+      try {
+        const response = await panelFetch('/api/manage/records');
+        if (response.status === 401) { if (!stopped) { setSession(null); setSubdomains([]); } return; }
+        const payload = await response.json() as { subdomains?: ManagedSubdomain[] };
+        if (!stopped && response.ok && payload.subdomains) setSubdomains(payload.subdomains);
+      } catch { /* Keep the last valid snapshot on a transient failure. */ }
+      finally { inFlight = false; }
+    };
+    const interval = window.setInterval(() => { void poll(); }, 10_000);
+    return () => { stopped = true; window.clearInterval(interval); };
+  }, [hasPendingDns]);
+
   // A user usually completes /start in Telegram and then returns to this tab.
   // Poll only while a short-lived link is active, not permanently in the panel.
   useEffect(() => {
     if (!telegramLinkUrl || !session || session.type !== 'owner' || session.owner.telegram) return;
-    let stopped = false;
+    let stopped = false, inFlight = false;
     const poll = async () => {
+      if (document.hidden || inFlight || mutationBusy.current) return;
+      inFlight = true;
       try {
-        const response = await fetch('/api/manage/session', { cache: 'no-store' });
+        const response = await panelFetch('/api/manage/session', { cache: 'no-store' });
         if (!response.ok || stopped) return;
         const payload = await response.json() as SessionData;
         if (payload.type === 'owner' && payload.owner.telegram) {
@@ -206,7 +236,7 @@ export default function ManagePage() {
         }
       } catch {
         // The normal panel remains usable when a background refresh fails.
-      }
+      } finally { inFlight = false; }
     };
     const interval = window.setInterval(() => { void poll(); }, 4_000);
     void poll();
@@ -259,7 +289,7 @@ export default function ManagePage() {
     setState('saving');
     setNotice(null);
     try {
-      const response = await fetch('/api/manage/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessKey }) });
+      const response = await panelFetch('/api/manage/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessKey }) });
       const payload = await response.json() as { error?: string };
       if (!response.ok) {
         setState('idle');
@@ -306,7 +336,7 @@ export default function ManagePage() {
     setState('saving');
     setRecoveryNotice(null);
     try {
-      const response = await fetch('/api/manage/recovery', {
+      const response = await panelFetch('/api/manage/recovery', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'lookup', identifier: recoveryIdentifier }),
@@ -330,7 +360,7 @@ export default function ManagePage() {
     setState('saving');
     setRecoveryNotice(null);
     try {
-      const response = await fetch('/api/manage/recovery', {
+      const response = await panelFetch('/api/manage/recovery', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'send-code', identifier: recoveryIdentifier }),
@@ -359,7 +389,7 @@ export default function ManagePage() {
     setState('saving');
     setRecoveryNotice(null);
     try {
-      const response = await fetch('/api/manage/recovery', {
+      const response = await panelFetch('/api/manage/recovery', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'verify-code', identifier: recoveryIdentifier, code: recoveryCode }),
@@ -390,7 +420,7 @@ export default function ManagePage() {
     setState('saving');
     setRecoveryNotice(null);
     try {
-      const response = await fetch('/api/manage/recovery', {
+      const response = await panelFetch('/api/manage/recovery', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -424,7 +454,7 @@ export default function ManagePage() {
     setState('saving');
     setTelegramNotice(null);
     try {
-      const response = await fetch('/api/manage/telegram-link', { method: 'POST' });
+      const response = await panelFetch('/api/manage/telegram-link', { method: 'POST' });
       const payload = await response.json() as { error?: string; url?: string; expiresAt?: number };
       if (!response.ok || !payload.url || !payload.expiresAt) {
         botWindow?.close();
@@ -460,7 +490,7 @@ export default function ManagePage() {
     setState('saving');
     setTelegramUnlinkNotice(null);
     try {
-      const response = await fetch('/api/manage/telegram-link', {
+      const response = await panelFetch('/api/manage/telegram-link', {
         method: 'PATCH',
       });
       const payload = await response.json() as { error?: string; expiresAt?: number };
@@ -488,7 +518,7 @@ export default function ManagePage() {
     setState('saving');
     setTelegramUnlinkNotice(null);
     try {
-      const response = await fetch('/api/manage/telegram-link', {
+      const response = await panelFetch('/api/manage/telegram-link', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: telegramUnlinkCode }),
@@ -523,38 +553,63 @@ export default function ManagePage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  function operationKey(body: unknown) {
+    const fingerprint = JSON.stringify(body);
+    if (mutationKey.current?.body !== fingerprint) mutationKey.current = { body: fingerprint, id: crypto.randomUUID() };
+    return mutationKey.current.id;
+  }
+
   async function saveRecord(event: FormEvent) {
     event.preventDefault();
-    if (!selected) return;
+    if (!selected || dnsBusy || mutationBusy.current) return;
+    mutationBusy.current = true;
     setState('saving');
     setNotice(null);
-    const body = { ...record, subdomainId: selected.id, priority: record.priority === '' ? null : Number(record.priority) };
-    const response = await fetch('/api/manage/records', { method: editingId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editingId ? { ...body, id: editingId } : body) });
-    const payload = await response.json() as { error?: string };
-    if (!response.ok) {
-      setState('idle');
-      setNotice({ tone: 'error', text: payload.error ?? 'Không thể lưu DNS record.' });
-      return;
-    }
-    resetForm();
-    await loadPanel();
-    setNotice({ tone: 'success', text: 'DNS record đã được cập nhật trên Cloudflare.' });
+    const body = { ...record, subdomainId: selected.id, priority: record.priority === '' ? null : Number(record.priority), ...(editingId ? { id: editingId } : {}) };
+    try {
+      const response = await panelFetch('/api/manage/records', {
+        method: editingId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': operationKey(body) },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json() as { error?: string; pending?: boolean };
+      if (!response.ok) {
+        if (response.status < 500) mutationKey.current = null;
+        setNotice({ tone: 'error', text: payload.error ?? t('Không thể lưu DNS record.', 'Could not save DNS record.') });
+        return;
+      }
+      mutationKey.current = null;
+      resetForm();
+      await loadPanel();
+      setNotice({ tone: payload.pending ? 'info' : 'success', text: payload.pending
+        ? t('DNS đang được đồng bộ. Panel sẽ tự cập nhật; không cần gửi lại.', 'DNS synchronization is pending. The panel will refresh; do not resubmit.')
+        : t('DNS record đã được cập nhật trên Cloudflare.', 'DNS record updated on Cloudflare.') });
+    } catch {
+      setNotice({ tone: 'error', text: t('Kết nối gián đoạn. Tải lại panel để kiểm tra trước khi thử lại.', 'Connection interrupted. Refresh the panel before retrying.') });
+    } finally { mutationBusy.current = false; setState('idle'); }
   }
 
   async function deleteRecord(item: DnsRecord) {
-    if (!selected || !window.confirm(`Xóa ${item.recordType} ${item.recordName} khỏi ${selected.label}.${selected.parentDomain}?`)) return;
+    if (!selected || dnsBusy || mutationBusy.current || !window.confirm(`Xóa ${item.recordType} ${item.recordName} khỏi ${selected.label}.${selected.parentDomain}?`)) return;
+    mutationBusy.current = true;
     setState('saving');
     setNotice(null);
-    const response = await fetch(`/api/manage/records?id=${encodeURIComponent(item.id)}`, { method: 'DELETE' });
-    const payload = await response.json() as { error?: string };
-    if (!response.ok) {
-      setState('idle');
-      setNotice({ tone: 'error', text: payload.error ?? 'Không thể xóa DNS record.' });
-      return;
-    }
-    if (editingId === item.id) resetForm();
-    await loadPanel();
-    setNotice({ tone: 'success', text: 'DNS record đã được xóa.' });
+    try {
+      const id = operationKey({ kind: 'delete', id: item.id });
+      const response = await panelFetch(`/api/manage/records?id=${encodeURIComponent(item.id)}`, { method: 'DELETE', headers: { 'Idempotency-Key': id } });
+      const payload = await response.json() as { error?: string; pending?: boolean };
+      if (!response.ok) {
+        if (response.status < 500) mutationKey.current = null;
+        setNotice({ tone: 'error', text: payload.error ?? t('Không thể xóa DNS record.', 'Could not delete DNS record.') });
+        return;
+      }
+      mutationKey.current = null;
+      if (editingId === item.id) resetForm();
+      await loadPanel();
+      setNotice({ tone: payload.pending ? 'info' : 'success', text: payload.pending
+        ? t('DNS đang được đồng bộ. Không cần bấm xóa lại.', 'DNS synchronization is pending. Do not delete again.')
+        : t('DNS record đã được xóa.', 'DNS record deleted.') });
+    } catch { setNotice({ tone: 'error', text: t('Kết nối gián đoạn. Tải lại panel để kiểm tra kết quả.', 'Connection interrupted. Refresh the panel to check the result.') }); }
+    finally { mutationBusy.current = false; setState('idle'); }
   }
 
   function resetDeleteVerification() {
@@ -568,7 +623,7 @@ export default function ManagePage() {
     setState('saving');
     setNotice(null);
     try {
-      const response = await fetch('/api/manage/subdomains', {
+      const response = await panelFetch('/api/manage/subdomains', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subdomainId: selected.id, confirmation: deleteConfirmation }),
@@ -596,7 +651,7 @@ export default function ManagePage() {
 
   async function deleteSubdomain(event: FormEvent) {
     event.preventDefault();
-    if (!selected || deleteConfirmation !== confirmationTarget) return;
+    if (!selected || dnsBusy || mutationBusy.current || deleteConfirmation !== confirmationTarget) return;
     const telegramLinked = session?.type === 'owner' && Boolean(session.owner.telegram);
     if (telegramLinked && !deleteCodeSent) {
       await requestDeleteVerificationCode();
@@ -606,10 +661,11 @@ export default function ManagePage() {
       setNotice({ tone: 'error', text: 'Nhập mã 6 số đã gửi tới Telegram trước khi xóa.' });
       return;
     }
+    mutationBusy.current = true;
     setState('saving');
     setNotice(null);
     try {
-    const response = await fetch('/api/manage/subdomains', {
+    const response = await panelFetch('/api/manage/subdomains', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -618,10 +674,15 @@ export default function ManagePage() {
         ...(telegramLinked ? { code: deleteVerificationCode } : {}),
       }),
     });
-    const payload = await response.json() as { error?: string; ownerDeleted?: boolean; hostname?: string };
+    const payload = await response.json() as { error?: string; pending?: boolean; ownerDeleted?: boolean; hostname?: string };
     if (!response.ok) {
       setState('idle');
       setNotice({ tone: 'error', text: payload.error ?? 'Không thể xóa subdomain.' });
+      return;
+    }
+    if (payload.pending) {
+      await loadPanel();
+      setNotice({ tone: 'info', text: t('Đang xóa toàn bộ DNS. Panel sẽ tự cập nhật khi hoàn tất.', 'Deleting all DNS records. The panel will refresh when complete.') });
       return;
     }
     resetForm();
@@ -629,7 +690,7 @@ export default function ManagePage() {
     resetDeleteVerification();
     setDeletePanelOpen(false);
     if (payload.ownerDeleted) {
-      await fetch('/api/manage/session', { method: 'DELETE' });
+      await panelFetch('/api/manage/session', { method: 'DELETE' });
       setSession(null);
       setSubdomains([]);
       setSelectedId('');
@@ -641,7 +702,7 @@ export default function ManagePage() {
     } catch {
       setState('idle');
       setNotice({ tone: 'error', text: 'Không thể kết nối để xóa subdomain.' });
-    }
+    } finally { mutationBusy.current = false; setState('idle'); }
   }
 
   async function refreshRequestStatus() {
@@ -657,7 +718,7 @@ export default function ManagePage() {
     setState('saving');
     setNotice(null);
     try {
-      const response = await fetch('/api/manage/pending-request', {
+      const response = await panelFetch('/api/manage/pending-request', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmation: cancelRequestConfirmation }),
@@ -730,7 +791,7 @@ export default function ManagePage() {
     setState('saving');
     setAccessKeyChangeNotice(null);
     try {
-      const response = await fetch('/api/manage/access-key', {
+      const response = await panelFetch('/api/manage/access-key', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ currentAccessKey, newAccessKey }),
@@ -793,7 +854,10 @@ export default function ManagePage() {
   }
 
   async function logout() {
-    await fetch('/api/manage/session', { method: 'DELETE' });
+    try {
+      const response = await panelFetch('/api/manage/session', { method: 'DELETE' });
+      if (!response.ok) throw new Error('Logout failed');
+    } catch { setNotice({ tone: 'error', text: t('Không thể đăng xuất. Hãy thử lại.', 'Could not sign out. Please retry.') }); return; }
     setSession(null);
     setSubdomains([]);
     setSelectedId('');
@@ -906,7 +970,7 @@ export default function ManagePage() {
     {subdomains.length === 0 ? <><div className="panel empty-state">{t('Chưa có subdomain active cho access key này.', 'There is no active subdomain for this access key yet.')}</div></> : <>
       <div className="domain-tabs" role="tablist">{subdomains.map((domain) => <button type="button" key={domain.id} className={domain.id === selected?.id ? 'domain-tab active' : 'domain-tab'} onClick={() => { setSelectedId(domain.id); resetForm(); setDeletePanelOpen(false); setDeleteConfirmation(''); resetDeleteVerification(); }}>{domain.label}.{domain.parentDomain}</button>)}</div>
       {selected && <>
-        <section className="panel primary-domain-panel"><div className="primary-domain-heading"><div><p className="eyebrow"><span className="pixel-dot" /> PRIMARY SUBDOMAIN</p><h2>{selected.label}<span>.{selected.parentDomain}</span></h2><p>{t('Đây là subdomain bạn đã đăng ký. Record chính luôn được ghim ở đây.', 'This is the subdomain you registered. Its primary record is always pinned here.')}</p></div><span className="status active">PRIMARY</span></div>{primaryRecord ? <div className="primary-record-summary"><span className="record-type">{primaryRecord.recordType}</span><div><strong>{recordHost(selected.label, selected.parentDomain, primaryRecord.recordName)}</strong><code>{primaryRecord.content}</code><small>{ttlLabel(primaryRecord.ttl)}{primaryRecord.proxied ? ' · proxied' : ' · DNS only'}</small></div><div className="primary-record-actions"><button className="icon-action" type="button" onClick={() => editRecord(primaryRecord)} aria-label={t('Sửa record chính', 'Edit primary record')} title={t('Sửa record chính', 'Edit primary record')}>✎</button><button className="icon-action destructive-icon" type="button" onClick={() => { setDeletePanelOpen((open) => !open); setDeleteConfirmation(''); resetDeleteVerification(); }} aria-label={t('Xóa toàn bộ subdomain', 'Delete entire subdomain')} title={t('Xóa toàn bộ subdomain', 'Delete entire subdomain')}>×</button></div></div> : <p className="empty-copy">{t('Không tìm thấy record chính. Hãy liên hệ admin.', 'Primary record not found. Please contact the admin.')}</p>}</section>
+        <section className="panel primary-domain-panel">{dnsBusy && <p className="empty-copy" role="status">{t('DNS đang được đồng bộ. Các thao tác ghi tạm khóa để bảo vệ dữ liệu.', 'DNS is synchronizing. Writes are temporarily locked to protect your data.')}</p>}<div className="primary-domain-heading"><div><p className="eyebrow"><span className="pixel-dot" /> PRIMARY SUBDOMAIN</p><h2>{selected.label}<span>.{selected.parentDomain}</span></h2><p>{t('Đây là subdomain bạn đã đăng ký. Record chính luôn được ghim ở đây.', 'This is the subdomain you registered. Its primary record is always pinned here.')}</p></div><span className="status active">PRIMARY</span></div>{primaryRecord ? <div className="primary-record-summary"><span className="record-type">{primaryRecord.recordType}</span><div><strong>{recordHost(selected.label, selected.parentDomain, primaryRecord.recordName)}</strong><code>{primaryRecord.content}</code><small>{ttlLabel(primaryRecord.ttl)}{primaryRecord.proxied ? ' · proxied' : ' · DNS only'}</small></div><div className="primary-record-actions"><button className="icon-action" type="button" onClick={() => editRecord(primaryRecord)} disabled={state !== 'idle' || dnsBusy} aria-label={t('Sửa record chính', 'Edit primary record')} title={t('Sửa record chính', 'Edit primary record')}>✎</button><button className="icon-action destructive-icon" type="button" onClick={() => { setDeletePanelOpen((open) => !open); setDeleteConfirmation(''); resetDeleteVerification(); }} aria-label={t('Xóa toàn bộ subdomain', 'Delete entire subdomain')} title={t('Xóa toàn bộ subdomain', 'Delete entire subdomain')}>×</button></div></div> : <p className="empty-copy">{t('Không tìm thấy record chính. Hãy liên hệ admin.', 'Primary record not found. Please contact the admin.')}</p>}</section>
         {deletePanelOpen && <section className="panel delete-subdomain-panel">
           <p className="eyebrow"><span className="pixel-dot" /> DANGER ZONE</p>
           <h2>{t('Xóa', 'Delete')} {confirmationTarget}</h2>
@@ -923,15 +987,15 @@ export default function ManagePage() {
               {deleteCodeSent && <small>{t(`Mã dùng một lần${deleteCodeExpiresAt ? ` · hết hạn ${date(deleteCodeExpiresAt)}` : ''}. Không nhận được? Bạn có thể gửi lại mã.`, `One-time code${deleteCodeExpiresAt ? ` · expires ${date(deleteCodeExpiresAt)}` : ''}. Did not receive it? You can send it again.`)}</small>}
             </div> : <p className="delete-no-telegram">{t('Bạn chưa liên kết Telegram nên thao tác này chỉ được bảo vệ bằng hostname xác nhận. Bạn có thể liên kết bot ở đầu panel để tăng bảo mật.', 'Telegram is not linked, so this action is protected only by hostname confirmation. Link the bot at the top of this panel for stronger security.')}</p>}
             <div className="editor-actions">
-              <button className="button destructive" type="submit" disabled={state !== 'idle' || deleteConfirmation !== confirmationTarget || (Boolean(session.owner.telegram) && deleteCodeSent && !/^\d{6}$/.test(deleteVerificationCode))}>{state === 'saving' ? t('Đang xử lý...', 'Processing...') : session.owner.telegram ? (deleteCodeSent ? t('Xác nhận xóa toàn bộ', 'Confirm full deletion') : t('Gửi mã qua Telegram', 'Send code via Telegram')) : t('Tôi hiểu, xóa toàn bộ', 'I understand, delete everything')}</button>
+              <button className="button destructive" type="submit" disabled={state !== 'idle' || dnsBusy || deleteConfirmation !== confirmationTarget || (Boolean(session.owner.telegram) && deleteCodeSent && !/^\d{6}$/.test(deleteVerificationCode))}>{state === 'saving' ? t('Đang xử lý...', 'Processing...') : session.owner.telegram ? (deleteCodeSent ? t('Xác nhận xóa toàn bộ', 'Confirm full deletion') : t('Gửi mã qua Telegram', 'Send code via Telegram')) : t('Tôi hiểu, xóa toàn bộ', 'I understand, delete everything')}</button>
               {session.owner.telegram && deleteCodeSent && <button className="button secondary-action" type="button" onClick={() => void requestDeleteVerificationCode()} disabled={state !== 'idle'}>{t('Gửi lại mã', 'Send code again')}</button>}
               <button type="button" className="button cancel" onClick={() => { setDeletePanelOpen(false); setDeleteConfirmation(''); resetDeleteVerification(); }} disabled={state === 'saving'}>{t('Hủy', 'Cancel')}</button>
             </div>
           </form>
         </section>}
         <div className="manage-grid">
-          <section className="panel record-editor"><div className="panel-heading"><span className="block-mark" /><div><p>{editingId ? (editingId === primaryRecord?.id ? 'EDIT PRIMARY RECORD' : 'EDIT RECORD') : 'NEW CHILD RECORD'}</p><h2>{editingId ? (editingId === primaryRecord?.id ? t('Sửa record chính', 'Edit primary record') : t('Sửa DNS record', 'Edit DNS record')) : t('Thêm record con', 'Add child record')}</h2></div></div><form onSubmit={saveRecord}><div className="form-pair"><label>{t('Loại', 'Type')}<select className="field" value={record.recordType} onChange={(event) => { const recordType = event.target.value as RecordType; setRecord((value) => ({ ...value, recordType, proxied: proxyable.has(recordType) ? value.proxied : false, priority: recordType === 'MX' ? value.priority : '' })); }}>{(['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'CAA'] as RecordType[]).map((type) => <option value={type} key={type}>{type}</option>)}</select></label><label>{t('Tên', 'Name')}<input className="field" value={record.recordName} onChange={(event) => setRecord((value) => ({ ...value, recordName: event.target.value }))} placeholder={t('@ hoặc web', '@ or web')} required /></label></div><label>{t('Nội dung', 'Content')}<input className="field" value={record.content} onChange={(event) => setRecord((value) => ({ ...value, content: event.target.value }))} placeholder={record.recordType === 'A' ? '203.0.113.10' : record.recordType === 'TXT' ? 'verification=value' : record.recordType === 'CAA' ? '0 issue letsencrypt.org' : 'target.example.com'} required /><small>{record.recordType === 'CAA' ? t('Ví dụ: 0 issue letsencrypt.org', 'Example: 0 issue letsencrypt.org') : t(`Sẽ tạo tại ${recordHost(selected.label, selected.parentDomain, record.recordName || '@')}`, `Will be created at ${recordHost(selected.label, selected.parentDomain, record.recordName || '@')}`)}</small></label><div className="form-pair"><label>TTL<select className="field" value={record.ttl} onChange={(event) => setRecord((value) => ({ ...value, ttl: Number(event.target.value) }))}><option value={1}>Auto</option><option value={60}>{t('60 giây', '60 seconds')}</option><option value={300}>{t('5 phút', '5 minutes')}</option><option value={3600}>{t('1 giờ', '1 hour')}</option></select></label>{record.recordType === 'MX' && <label>{t('Ưu tiên', 'Priority')}<input className="field" type="number" min="0" max="65535" value={record.priority} onChange={(event) => setRecord((value) => ({ ...value, priority: event.target.value }))} required /></label>}</div>{proxyable.has(record.recordType) && <label className="check-row proxy-row"><input type="checkbox" checked={record.proxied} onChange={(event) => setRecord((value) => ({ ...value, proxied: event.target.checked }))} /><span>{t('Proxy qua Cloudflare', 'Proxy through Cloudflare')} <small>{t('Chỉ bật cho web traffic HTTP/HTTPS.', 'Enable only for HTTP/HTTPS web traffic.')}</small></span></label>}<div className="editor-actions"><button className="button" type="submit" disabled={state !== 'idle'}>{state === 'saving' ? t('Đang lưu...', 'Saving...') : editingId ? t('Lưu thay đổi', 'Save changes') : t('Tạo record', 'Create record')}</button>{editingId && <button type="button" className="button cancel" onClick={resetForm}>{t('Hủy', 'Cancel')}</button>}</div></form></section>
-          <section className="panel records-panel"><div className="records-heading"><p className="eyebrow"><span className="pixel-dot" /> CHILD RECORDS</p><span className="status">{secondaryRecords.length} {t('records', 'records')}</span></div><div className="record-list">{secondaryRecords.length === 0 ? <p className="empty-copy">{t('Chưa có record con nào.', 'There are no child records yet.')}</p> : secondaryRecords.map((item) => <article className="record-row" key={item.id}><div className="record-main"><span className="record-type">{item.recordType}</span><div><strong>{recordHost(selected.label, selected.parentDomain, item.recordName)}</strong><code>{item.content}{item.priority !== null ? ` · priority ${item.priority}` : ''}</code><small>{ttlLabel(item.ttl)}{item.proxied ? ' · proxied' : ' · DNS only'}</small></div></div><div className="record-actions"><button type="button" className="record-action" onClick={() => editRecord(item)}>{t('Sửa', 'Edit')}</button><button type="button" className="record-action danger-action" onClick={() => void deleteRecord(item)} disabled={state !== 'idle'}>{t('Xóa', 'Delete')}</button></div></article>)}</div></section>
+          <section className="panel record-editor"><div className="panel-heading"><span className="block-mark" /><div><p>{editingId ? (editingId === primaryRecord?.id ? 'EDIT PRIMARY RECORD' : 'EDIT RECORD') : 'NEW CHILD RECORD'}</p><h2>{editingId ? (editingId === primaryRecord?.id ? t('Sửa record chính', 'Edit primary record') : t('Sửa DNS record', 'Edit DNS record')) : t('Thêm record con', 'Add child record')}</h2></div></div><form onSubmit={saveRecord}><div className="form-pair"><label>{t('Loại', 'Type')}<select className="field" value={record.recordType} onChange={(event) => { const recordType = event.target.value as RecordType; setRecord((value) => ({ ...value, recordType, proxied: proxyable.has(recordType) ? value.proxied : false, priority: recordType === 'MX' ? value.priority : '' })); }}>{(['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'CAA'] as RecordType[]).map((type) => <option value={type} key={type}>{type}</option>)}</select></label><label>{t('Tên', 'Name')}<input className="field" disabled={editingId === primaryRecord?.id || dnsBusy} value={record.recordName} onChange={(event) => setRecord((value) => ({ ...value, recordName: event.target.value }))} placeholder={t('@ hoặc web', '@ or web')} required /></label></div><label>{t('Nội dung', 'Content')}<input className="field" value={record.content} onChange={(event) => setRecord((value) => ({ ...value, content: event.target.value }))} placeholder={record.recordType === 'A' ? '203.0.113.10' : record.recordType === 'TXT' ? 'verification=value' : record.recordType === 'CAA' ? '0 issue letsencrypt.org' : 'target.example.com'} required /><small>{record.recordType === 'CAA' ? t('Ví dụ: 0 issue letsencrypt.org', 'Example: 0 issue letsencrypt.org') : t(`Sẽ tạo tại ${recordHost(selected.label, selected.parentDomain, record.recordName || '@')}`, `Will be created at ${recordHost(selected.label, selected.parentDomain, record.recordName || '@')}`)}</small></label><div className="form-pair"><label>TTL<select className="field" value={record.ttl} onChange={(event) => setRecord((value) => ({ ...value, ttl: Number(event.target.value) }))}><option value={1}>Auto</option><option value={60}>{t('60 giây', '60 seconds')}</option><option value={300}>{t('5 phút', '5 minutes')}</option><option value={3600}>{t('1 giờ', '1 hour')}</option></select></label>{record.recordType === 'MX' && <label>{t('Ưu tiên', 'Priority')}<input className="field" type="number" min="0" max="65535" value={record.priority} onChange={(event) => setRecord((value) => ({ ...value, priority: event.target.value }))} required /></label>}</div>{proxyable.has(record.recordType) && <label className="check-row proxy-row"><input type="checkbox" checked={record.proxied} onChange={(event) => setRecord((value) => ({ ...value, proxied: event.target.checked }))} /><span>{t('Proxy qua Cloudflare', 'Proxy through Cloudflare')} <small>{t('Chỉ bật cho web traffic HTTP/HTTPS.', 'Enable only for HTTP/HTTPS web traffic.')}</small></span></label>}<div className="editor-actions"><button className="button" type="submit" disabled={state !== 'idle' || dnsBusy}>{state === 'saving' ? t('Đang lưu...', 'Saving...') : editingId ? t('Lưu thay đổi', 'Save changes') : t('Tạo record', 'Create record')}</button>{editingId && <button type="button" className="button cancel" onClick={resetForm}>{t('Hủy', 'Cancel')}</button>}</div></form></section>
+          <section className="panel records-panel"><div className="records-heading"><p className="eyebrow"><span className="pixel-dot" /> CHILD RECORDS</p><span className="status">{secondaryRecords.length} {t('records', 'records')}</span></div><div className="record-list">{secondaryRecords.length === 0 ? <p className="empty-copy">{t('Chưa có record con nào.', 'There are no child records yet.')}</p> : secondaryRecords.map((item) => <article className="record-row" key={item.id}><div className="record-main"><span className="record-type">{item.recordType}</span><div><strong>{recordHost(selected.label, selected.parentDomain, item.recordName)}</strong><code>{item.content}{item.priority !== null ? ` · priority ${item.priority}` : ''}</code><small>{ttlLabel(item.ttl)}{item.proxied ? ' · proxied' : ' · DNS only'}</small></div></div><div className="record-actions"><button type="button" className="record-action" onClick={() => editRecord(item)} disabled={state !== 'idle' || dnsBusy}>{t('Sửa', 'Edit')}</button><button type="button" className="record-action danger-action" onClick={() => void deleteRecord(item)} disabled={state !== 'idle' || dnsBusy}>{t('Xóa', 'Delete')}</button></div></article>)}</div></section>
         </div>
       </>}
     </>}

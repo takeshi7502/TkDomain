@@ -1,3 +1,4 @@
+import { readJson, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 
 import { isAdminAuthorized } from '@/lib/admin-auth';
@@ -8,7 +9,7 @@ export async function POST(request: NextRequest) {
   if (!isAdminAuthorized(request)) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
 
   let body: { action?: unknown } = {};
-  try { body = await request.json() as typeof body; } catch { /* Existing test callers may send no JSON body. */ }
+  try { if (request.body) body = await readJson(request) as typeof body; } catch (error) { return errorResponse(error); }
   const action = body.action === 'configure-webhook' ? 'configure-webhook' : 'test';
 
   const limit = await enforceRegistryRateLimit(request, `admin-telegram-${action}`, 5, 15 * 60_000);

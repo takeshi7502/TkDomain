@@ -9,7 +9,7 @@ const LANGUAGE_EVENT = 'takeshi-domains-language-change';
 
 function readLanguage(): UserLanguage {
   if (typeof window === 'undefined') return 'vi';
-  return window.localStorage.getItem(STORAGE_KEY) === 'en' ? 'en' : 'vi';
+  try { return window.localStorage.getItem(STORAGE_KEY) === 'en' ? 'en' : 'vi'; } catch { return 'vi'; }
 }
 
 function subscribe(onStoreChange: () => void) {
@@ -28,7 +28,7 @@ export function useUserLanguage() {
   const language = useSyncExternalStore<UserLanguage>(subscribe, readLanguage, () => 'vi');
 
   function changeLanguage(next: UserLanguage) {
-    window.localStorage.setItem(STORAGE_KEY, next);
+    try { window.localStorage.setItem(STORAGE_KEY, next); } catch { /* Storage may be disabled. */ }
     window.dispatchEvent(new Event(LANGUAGE_EVENT));
   }
 

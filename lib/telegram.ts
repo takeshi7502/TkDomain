@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
-import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 
 import { ensureRegistrySchema, getDb } from '@/db';
 import {
@@ -15,6 +15,7 @@ import {
   telegramWebhookUpdates,
 } from '@/db/schema';
 import { BASE_DOMAIN, isValidTelegramUsername, normalizeTelegramUsername } from '@/lib/registry';
+import { authSecret } from '@/lib/auth-secret';
 
 const REGISTRY_ADMIN_URL = 'https://domain.takeshi.dev/admin';
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
@@ -104,9 +105,7 @@ function adminBotConfig() {
 }
 
 function registrySecret() {
-  const secret = process.env.REGISTRY_ADMIN_KEY;
-  if (!secret) throw new Error('REGISTRY_ADMIN_KEY is unavailable.');
-  return secret;
+  return authSecret();
 }
 
 function hashTelegramSecret(namespace: string, value: string) {
@@ -304,31 +303,32 @@ export async function createTelegramLinkToken(ownerId: string): Promise<Telegram
  * (the route validates that before calling this function) and makes a Telegram
  * identity exclusive to one panel owner.
  */
-export async function consumeTelegramLinkToken(token: string, identity: TelegramIdentity): Promise<TelegramLinkResult> {
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(token)) return { status: 'invalid-or-expired' };
+export async function consumeTelegramLinkToken(token: string, identity: TelegramIdentity, webhook?: { updateId: string; leaseToken: string }): Promise<TelegramLinkResult> {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(token)) {
+    if (webhook) await completeTelegramWebhookUpdate(webhook.updateId, webhook.leaseToken);
+    return { status: 'invalid-or-expired' };
+  }
   await ensureRegistrySchema();
   const now = Date.now();
   const tokenHash = hashTelegramSecret('link-token', token);
 
+  const [candidate] = await getDb().select({ ownerId: telegramLinkTokens.ownerId }).from(telegramLinkTokens)
+    .where(eq(telegramLinkTokens.tokenHash, tokenHash)).limit(1);
+  if (!candidate) {
+    if (webhook) await completeTelegramWebhookUpdate(webhook.updateId, webhook.leaseToken);
+    return { status: 'invalid-or-expired' };
+  }
   try {
     return await getDb().transaction(async (tx): Promise<TelegramLinkResult> => {
-      const [linkToken] = await tx
-        .select()
-        .from(telegramLinkTokens)
-        .where(and(
-          eq(telegramLinkTokens.tokenHash, tokenHash),
-          isNull(telegramLinkTokens.consumedAt),
-          gt(telegramLinkTokens.expiresAt, now),
-        ))
-        .for('update');
-      if (!linkToken) return { status: 'invalid-or-expired' };
-
-      const [owner] = await tx
-        .select({ id: owners.id })
-        .from(owners)
-        .where(and(eq(owners.id, linkToken.ownerId), eq(owners.status, 'active')))
-        .for('update');
+      const result = await (async (): Promise<TelegramLinkResult> => {
+      // All linking/reset flows lock owner BEFORE tokens/links.
+      const [owner] = await tx.select({ id: owners.id }).from(owners)
+        .where(and(eq(owners.id, candidate.ownerId), eq(owners.status, 'active'))).for('update');
       if (!owner) return { status: 'invalid-or-expired' };
+      const [linkToken] = await tx.select().from(telegramLinkTokens)
+        .where(and(eq(telegramLinkTokens.tokenHash, tokenHash), eq(telegramLinkTokens.ownerId, owner.id),
+          isNull(telegramLinkTokens.consumedAt), gt(telegramLinkTokens.expiresAt, now))).for('update');
+      if (!linkToken) return { status: 'invalid-or-expired' };
 
       const [linkedToIdentity] = await tx
         .select()
@@ -409,12 +409,17 @@ export async function consumeTelegramLinkToken(token: string, identity: Telegram
       return linkedToIdentity
         ? { status: 'already-linked-to-owner', profile }
         : { status: 'linked', profile };
+      })();
+      if (webhook) await tx.update(telegramWebhookUpdates).set({ status: 'done', processedAt: now, leaseToken: null, leaseUntil: 0 })
+        .where(and(eq(telegramWebhookUpdates.updateId, webhook.updateId), eq(telegramWebhookUpdates.leaseToken, webhook.leaseToken)));
+      return result;
     });
   } catch (error) {
     // A concurrent /start for the same Telegram identity can only surface as a
     // database uniqueness conflict. Treat it as a benign "linked elsewhere"
     // result rather than leaking details or consuming the one-time token.
     if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23505') {
+      if (webhook) await completeTelegramWebhookUpdate(webhook.updateId, webhook.leaseToken);
       return { status: 'linked-to-another-owner' };
     }
     throw error;
@@ -439,13 +444,14 @@ export async function findTelegramLinkedOwner(identifier: unknown) {
   const normalized = normalizeTelegramRecoveryIdentifier(identifier);
   if (!normalized) return null;
   await ensureRegistrySchema();
-  const [link] = await getDb()
+  const links = await getDb()
     .select({ ownerId: telegramLinks.ownerId, profile: telegramLinks })
     .from(telegramLinks)
     .where(isTelegramUserId(normalized)
       ? eq(telegramLinks.telegramUserId, normalized)
       : sql`lower(${telegramLinks.linkedUsername}) = ${normalized}`)
-    .limit(1);
+    .limit(2);
+  const link = links.length === 1 ? links[0] : null;
   return link ? { ownerId: link.ownerId, profile: profileFromLink(link.profile) } : null;
 }
 
@@ -775,26 +781,30 @@ export async function sendTelegramMessageToOwner(ownerId: string, text: string) 
   return { linked: true, ...delivery };
 }
 
-export async function hasProcessedTelegramWebhookUpdate(updateId: string) {
-  if (!/^\d{1,20}$/.test(updateId)) return false;
+/** Atomic claim, including retries after an interrupted handler. */
+export async function claimTelegramWebhookUpdate(updateId: string) {
   await ensureRegistrySchema();
-  const [processed] = await getDb()
-    .select({ updateId: telegramWebhookUpdates.updateId })
-    .from(telegramWebhookUpdates)
-    .where(eq(telegramWebhookUpdates.updateId, updateId))
-    .limit(1);
-  return Boolean(processed);
+  const now = Date.now(), leaseToken = crypto.randomUUID(), db = getDb();
+  const [claimed] = await db.insert(telegramWebhookUpdates).values({
+    updateId, processedAt: now, status: 'processing', leaseToken, leaseUntil: now + 120_000,
+  }).onConflictDoUpdate({ target: telegramWebhookUpdates.updateId,
+    set: { leaseToken, leaseUntil: now + 120_000 },
+    setWhere: and(eq(telegramWebhookUpdates.status, 'processing'), lt(telegramWebhookUpdates.leaseUntil, now)),
+  }).returning();
+  if (claimed) return { status: 'claimed' as const, leaseToken };
+  const [row] = await db.select({ status: telegramWebhookUpdates.status }).from(telegramWebhookUpdates).where(eq(telegramWebhookUpdates.updateId, updateId));
+  return { status: row?.status === 'done' ? 'done' as const : 'busy' as const, leaseToken: null };
 }
 
-/** Mark a completed /start update. This intentionally happens after linking. */
-export async function markTelegramWebhookUpdateProcessed(updateId: string) {
-  if (!/^\d{1,20}$/.test(updateId)) return false;
+export async function completeTelegramWebhookUpdate(updateId: string, leaseToken: string) {
+  await getDb().update(telegramWebhookUpdates).set({ status: 'done', processedAt: Date.now(), leaseToken: null, leaseUntil: 0 })
+    .where(and(eq(telegramWebhookUpdates.updateId, updateId), eq(telegramWebhookUpdates.leaseToken, leaseToken)));
+}
+
+export async function refreshVerifiedTelegramProfile(identity: TelegramIdentity) {
   await ensureRegistrySchema();
-  const inserted = await getDb().insert(telegramWebhookUpdates)
-    .values({ updateId, processedAt: Date.now() })
-    .onConflictDoNothing()
-    .returning({ updateId: telegramWebhookUpdates.updateId });
-  return inserted.length > 0;
+  await getDb().update(telegramLinks).set({ linkedUsername: identity.linkedUsername, displayName: identity.displayName, updatedAt: Date.now() })
+    .where(and(eq(telegramLinks.telegramUserId, identity.telegramUserId), eq(telegramLinks.chatId, identity.chatId)));
 }
 
 export function isTelegramWebhookSecretValid(receivedSecret: string | null) {

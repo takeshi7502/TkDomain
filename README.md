@@ -27,6 +27,9 @@ Vercel Project Settings → Environment Variables:
 
 ```text
 REGISTRY_ADMIN_KEY=<chuỗi ngẫu nhiên dài>
+REGISTRY_AUTH_SECRET=<ban đầu sao chép đúng REGISTRY_ADMIN_KEY hiện tại; không đổi khi đổi admin key>
+CRON_SECRET=<chuỗi ngẫu nhiên dài riêng cho maintenance cron>
+DNS_RECORD_LIMIT=50
 CLOUDFLARE_API_TOKEN=<token có Zone / DNS / Edit + Zone / Zone / Read trên mọi zone registry quản lý>
 CLOUDFLARE_ZONE_ID=<Zone ID takeshi.dev, chỉ dùng seed/fallback khi migrate>
 TELEGRAM_BOT_TOKEN=<token từ BotFather>
@@ -51,7 +54,7 @@ Email trong form đăng ký là bắt buộc. Một thư xác nhận được g�
 được lưu; sau khi được duyệt, thư thứ hai kèm access key do hệ thống tạo để đăng nhập
 DNS Panel. Email không được dùng trực tiếp để đăng nhập, tìm owner hoặc khôi phục key.
 Database chỉ lưu hash của key. Hệ thống có thể tạo lại đúng key từ request ID và
-`REGISTRY_ADMIN_KEY` để thử gửi lại email duyệt mà không lưu key dạng rõ.
+`REGISTRY_AUTH_SECRET` để thử gửi lại email duyệt mà không lưu key dạng rõ.
 Trình duyệt vừa đăng ký nhận phiên tạm 7 ngày để xem hoặc hủy request đang chờ;
 phiên tạm không cấp quyền quản lý DNS sau khi duyệt. User phải dùng key trong
 email duyệt để đăng nhập DNS Panel.
@@ -66,6 +69,23 @@ Việc gửi thư chạy sau transaction duyệt DNS. Nếu Resend chưa đượ
 lỗi, subdomain vẫn active; admin sẽ thấy trạng thái lỗi trong **Nhật ký yêu cầu** và
 có nút hình phong bì để thử lại. Hệ thống khóa lần gửi song song, giới hạn số lần gửi
 theo người nhận và dùng idempotency key để tránh gửi trùng khi retry.
+
+## Migration và kiểm thử
+
+Schema không còn được tạo/sửa trong mỗi request. Trước khi deploy phiên bản này,
+chạy `npm run db:migrate` bằng `DATABASE_URL_UNPOOLED` của branch Neon thử nghiệm
+(không có `-pooler` trong hostname). Thử migration hai lần và kiểm tra dữ liệu
+cũ còn nguyên trước khi áp dụng cùng migration lên production.
+
+```text
+npm test
+npx tsc --noEmit
+npm run lint
+npm run build
+```
+
+**Không push lên `main` trước migration**, vì Vercel tự deploy và app mới yêu cầu
+schema version 9. Xem [hướng dẫn triển khai an toàn](docs/stability-rollout.md).
 
 ## Nhiều domain
 

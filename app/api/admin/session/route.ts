@@ -1,3 +1,4 @@
+import { readJson, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 
 import {
@@ -25,12 +26,10 @@ export async function POST(request: NextRequest) {
 
   let body: { adminKey?: string };
   try {
-    body = await request.json() as { adminKey?: string };
-  } catch {
-    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
-  }
+    body = await readJson(request) as { adminKey?: string };
+  } catch (error) { return errorResponse(error); }
 
-  const suppliedKey = body.adminKey?.trim() ?? request.headers.get('x-registry-admin-key');
+  const suppliedKey = (typeof body.adminKey === 'string' ? body.adminKey.trim() : '') ?? request.headers.get('x-registry-admin-key');
   if (!isValidAdminKey(suppliedKey)) return NextResponse.json({ error: 'Admin key không đúng.' }, { status: 401 });
 
   const response = NextResponse.json({ ok: true, authenticated: true });

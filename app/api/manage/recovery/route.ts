@@ -1,3 +1,4 @@
+import { readJson, errorResponse } from '@/lib/http';
 import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -66,10 +67,8 @@ export async function POST(request: NextRequest) {
 
   let body: RecoveryBody;
   try {
-    body = await request.json() as RecoveryBody;
-  } catch {
-    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
-  }
+    body = await readJson(request) as RecoveryBody;
+  } catch (error) { return errorResponse(error); }
 
   const action = typeof body.action === 'string' ? body.action : '';
   if (action !== 'lookup' && action !== 'send-code' && action !== 'verify-code' && action !== 'reset-access-key') {

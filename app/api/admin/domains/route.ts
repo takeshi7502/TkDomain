@@ -1,3 +1,4 @@
+import { readJson, errorResponse, validId } from '@/lib/http';
 import { and, asc, count, eq } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -57,7 +58,7 @@ export async function POST(request: NextRequest) {
   if (!hasTrustedOrigin(request)) return NextResponse.json({ error: 'Invalid request origin.' }, { status: 403 });
 
   let body: { hostname?: unknown };
-  try { body = await request.json() as typeof body; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
+  try { body = await readJson(request) as typeof body; } catch (error) { return errorResponse(error); }
   const hostname = typeof body.hostname === 'string' ? normalizeParentDomain(body.hostname) : '';
   if (!isValidParentDomain(hostname)) return NextResponse.json({ error: 'Tên domain gốc không hợp lệ.' }, { status: 400 });
 
@@ -111,27 +112,23 @@ export async function DELETE(request: NextRequest) {
   if (!authorized(request)) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   if (!hasTrustedOrigin(request)) return NextResponse.json({ error: 'Invalid request origin.' }, { status: 403 });
   const id = request.nextUrl.searchParams.get('id')?.trim();
-  if (!id) return NextResponse.json({ error: 'Missing domain.' }, { status: 400 });
+  if (!validId(id)) return NextResponse.json({ error: 'Missing domain.' }, { status: 400 });
 
   await ensureRegistrySchema();
   const db = getDb();
-  const domain = await db.query.managedDomains.findFirst({ where: eq(managedDomains.id, id) });
-  if (!domain) return NextResponse.json({ error: 'Domain không tồn tại.' }, { status: 404 });
-  if (domain.status === 'archived') return NextResponse.json({ ok: true, domains: await listDomains() });
-
-  const [[subdomainCount], [pendingCount]] = await Promise.all([
-    db.select({ value: count() }).from(subdomains).where(eq(subdomains.parentDomainId, domain.id)),
-    db.select({ value: count() }).from(subdomainRequests)
-      .where(and(eq(subdomainRequests.parentDomainId, domain.id), eq(subdomainRequests.status, 'pending'))),
-  ]);
-  const attachedSubdomains = Number(subdomainCount?.value ?? 0);
-  const pendingRequests = Number(pendingCount?.value ?? 0);
-  if (attachedSubdomains > 0 || pendingRequests > 0) {
-    return NextResponse.json({
-      error: `Không thể gỡ ${domain.hostname}: còn ${attachedSubdomains} subdomain và ${pendingRequests} yêu cầu chờ duyệt.`,
-    }, { status: 409 });
-  }
-
-  await db.update(managedDomains).set({ status: 'archived', updatedAt: Date.now() }).where(eq(managedDomains.id, domain.id));
+  const result = await db.transaction(async (tx) => {
+    const [domain] = await tx.select().from(managedDomains).where(eq(managedDomains.id, id)).for('update');
+    if (!domain) return { error: 'Domain không tồn tại.', status: 404 };
+    if (domain.status === 'archived') return null;
+    const [subdomainCount] = await tx.select({ value: count() }).from(subdomains).where(eq(subdomains.parentDomainId, domain.id));
+    const [pendingCount] = await tx.select({ value: count() }).from(subdomainRequests)
+      .where(and(eq(subdomainRequests.parentDomainId, domain.id), eq(subdomainRequests.status, 'pending')));
+    if (subdomainCount.value > 0 || pendingCount.value > 0) return {
+      error: `Không thể gỡ ${domain.hostname}: còn ${subdomainCount.value} subdomain và ${pendingCount.value} yêu cầu chờ duyệt.`, status: 409,
+    };
+    await tx.update(managedDomains).set({ status: 'archived', updatedAt: Date.now() }).where(eq(managedDomains.id, domain.id));
+    return null;
+  });
+  if (result) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ ok: true, domains: await listDomains() });
 }

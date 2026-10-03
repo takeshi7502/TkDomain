@@ -1,250 +1,85 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { after, NextRequest, NextResponse } from 'next/server';
-
 import { getDb } from '@/db';
-import { dnsEvents, dnsRecords, managedDomains, subdomains } from '@/db/schema';
-import { createCloudflareRecord, deleteCloudflareRecord, updateCloudflareRecord } from '@/lib/cloudflare';
-import { fullRecordName, type DnsRecordInput, validateDnsRecord } from '@/lib/dns';
+import { dnsOperations, dnsRecords, managedDomains, subdomains } from '@/db/schema';
+import { validateDnsRecord } from '@/lib/dns';
+import { beginDnsOperation, resumeDnsOperations, runDnsOperation } from '@/lib/dns-operations';
+import { errorResponse, HttpError, readJson, trustedMutation, validId } from '@/lib/http';
 import { getOwnerSession } from '@/lib/owner-auth';
-import { sendTelegramMessageToOwner } from '@/lib/telegram';
-
-async function currentOwner(request: NextRequest) {
-  const session = await getOwnerSession(request);
-  if (!session) return null;
-  return session.owner;
-}
-
-async function ownedSubdomain(ownerId: string, subdomainId: string) {
-  const rows = await getDb()
-    .select({ domain: subdomains, parentDomain: managedDomains })
-    .from(subdomains)
-    .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
-    .where(and(eq(subdomains.id, subdomainId), eq(subdomains.ownerId, ownerId), eq(subdomains.status, 'active')))
-    .limit(1);
-  return rows[0] ?? null;
-}
-
-function auditRecordSummary(record: { recordType: string; recordName: string; ttl: number; proxied: boolean; priority: number | null }) {
-  return {
-    type: record.recordType,
-    name: record.recordName,
-    ttl: record.ttl,
-    proxied: record.proxied,
-    priority: record.priority,
-  };
-}
-
-function recordActionLabel(action: 'created' | 'updated' | 'deleted') {
-  return action === 'created' ? 'đã tạo' : action === 'updated' ? 'đã cập nhật' : 'đã xóa';
-}
-
-/**
- * Telegram is an optional convenience channel. Run it after the response so a
- * transient Bot API/database failure can never make a successful Cloudflare
- * change look failed to the DNS-panel owner.
- */
-function notifyOwnerAboutDnsChange(args: {
-  ownerId: string;
-  action: 'created' | 'updated' | 'deleted';
-  domainLabel: string;
-  parentDomain: string;
-  recordType: string;
-  recordName: string;
-}) {
-  const hostname = args.recordName === '@'
-    ? `${args.domainLabel}.${args.parentDomain}`
-    : `${args.recordName}.${args.domainLabel}.${args.parentDomain}`;
-  after(async () => {
-    try {
-      await sendTelegramMessageToOwner(args.ownerId, [
-        'TAKESHI DOMAINS',
-        '',
-        `DNS record ${recordActionLabel(args.action)}.`,
-        `${args.recordType} · ${hostname}`,
-        '',
-        'Mở DNS Panel để xem chi tiết.',
-      ].join('\n'));
-    } catch {
-      // Delivery is deliberately best-effort; do not log record contents,
-      // chat IDs, or an owner identifier here.
-      console.warn('Optional Telegram DNS notification could not be sent.');
-    }
-  });
-}
+import { enforceRegistryRateLimit, enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 
 export async function GET(request: NextRequest) {
-  const owner = await currentOwner(request);
-  if (!owner) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
-  const domains = await getDb()
-    .select({ id: subdomains.id, label: subdomains.label, parentDomain: managedDomains.hostname, status: subdomains.status })
-    .from(subdomains)
-    .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
-    .where(eq(subdomains.ownerId, owner.id))
-    .orderBy(asc(managedDomains.hostname), asc(subdomains.label));
-  const records = domains.length === 0
-    ? []
-    : await getDb().select().from(dnsRecords).innerJoin(subdomains, eq(dnsRecords.subdomainId, subdomains.id)).where(eq(subdomains.ownerId, owner.id)).orderBy(asc(dnsRecords.recordName), asc(dnsRecords.recordType));
-
-  return NextResponse.json({
-    subdomains: domains.map((domain) => ({
-      ...domain,
-      records: records.filter((row) => row.dns_records.subdomainId === domain.id).map((row) => row.dns_records),
-    })),
-  });
-}
-
-export async function POST(request: NextRequest) {
-  const owner = await currentOwner(request);
-  if (!owner) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
-  let body: DnsRecordInput & { subdomainId?: string };
-  try { body = await request.json() as DnsRecordInput & { subdomainId?: string }; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
-  if (!body.subdomainId) return NextResponse.json({ error: 'Missing subdomain.' }, { status: 400 });
-  const domain = await ownedSubdomain(owner.id, body.subdomainId);
-  if (!domain) return NextResponse.json({ error: 'Subdomain không tồn tại hoặc không thuộc quyền quản lý của bạn.' }, { status: 404 });
-  if (!domain.parentDomain.cloudflareZoneId) return NextResponse.json({ error: 'Cloudflare chưa được cấu hình cho domain gốc này. Liên hệ Admin.' }, { status: 409 });
-  const validated = validateDnsRecord(body);
-  if ('error' in validated) return NextResponse.json(validated, { status: 400 });
-
-  let cloudflareRecordId: string;
-  try {
-    cloudflareRecordId = await createCloudflareRecord(
-      fullRecordName(domain.domain.label, validated.value.recordName, domain.parentDomain.hostname),
-      validated.value,
-      `Takeshi Domains owner ${owner.id}`,
-      domain.parentDomain.cloudflareZoneId,
-    );
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Cloudflare DNS rejected this record.' }, { status: 502 });
+  const session = await getOwnerSession(request);
+  if (!session) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+  const limit = await enforceRegistryScopedRateLimit('dns-read-owner', session.owner.id, 30, 60_000);
+  if (!limit.allowed) return NextResponse.json({ error: 'Tải panel quá nhanh. Hãy chờ một phút.' }, { status: 429, headers: { 'Retry-After': String(limit.retryAfterSeconds) } });
+  const db = getDb(), ownerId = session.owner.id;
+  const domains = await db.select({ id: subdomains.id, label: subdomains.label, parentDomain: managedDomains.hostname, status: subdomains.status })
+    .from(subdomains).innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
+    .where(eq(subdomains.ownerId, ownerId)).orderBy(asc(managedDomains.hostname), asc(subdomains.label));
+  const records = await db.select({ record: dnsRecords }).from(dnsRecords).innerJoin(subdomains, eq(dnsRecords.subdomainId, subdomains.id))
+    .where(eq(subdomains.ownerId, ownerId)).orderBy(asc(dnsRecords.recordName), asc(dnsRecords.recordType));
+  const pending = await db.select({ subdomainId: dnsOperations.subdomainId, id: dnsOperations.id }).from(dnsOperations)
+    .where(and(eq(dnsOperations.ownerId, ownerId), eq(dnsOperations.status, 'pending')));
+  const byDomain = new Map<string, typeof dnsRecords.$inferSelect[]>();
+  for (const { record } of records) {
+    const list = byDomain.get(record.subdomainId) ?? [];
+    list.push(record); byDomain.set(record.subdomainId, list);
   }
-  const now = Date.now();
-  const id = crypto.randomUUID();
-  await getDb().insert(dnsRecords).values({ id, subdomainId: domain.domain.id, ...validated.value, isPrimary: false, cloudflareRecordId, createdAt: now, updatedAt: now });
-  await getDb().insert(dnsEvents).values({
-    id: crypto.randomUUID(),
-    subdomainId: domain.domain.id,
-    domainLabel: domain.domain.label,
-    parentDomain: domain.parentDomain.hostname,
-    recordId: id,
-    actorType: 'owner',
-    action: 'child_record_created',
-    details: { ...auditRecordSummary(validated.value), isPrimary: false },
-    createdAt: now,
-  });
-  notifyOwnerAboutDnsChange({
-    ownerId: owner.id,
-    action: 'created',
-    domainLabel: domain.domain.label,
-    parentDomain: domain.parentDomain.hostname,
-    recordType: validated.value.recordType,
-    recordName: validated.value.recordName,
-  });
-  return NextResponse.json({ ok: true, record: { id, cloudflareRecordId, ...validated.value, createdAt: now, updatedAt: now } }, { status: 201 });
+  if (pending.length) after(async () => { try { await resumeDnsOperations(ownerId, 1); } catch { console.warn('DNS reconciliation deferred.'); } });
+  return NextResponse.json({ subdomains: domains.map((d) => ({ ...d, records: byDomain.get(d.id) ?? [], operationPending: pending.some((op) => op.subdomainId === d.id) })) });
 }
 
-export async function PATCH(request: NextRequest) {
-  const owner = await currentOwner(request);
-  if (!owner) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
-  let body: DnsRecordInput & { id?: string };
-  try { body = await request.json() as DnsRecordInput & { id?: string }; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
-  if (!body.id) return NextResponse.json({ error: 'Missing DNS record.' }, { status: 400 });
-  const rows = await getDb()
-    .select({ record: dnsRecords, domain: subdomains, parentDomain: managedDomains })
-    .from(dnsRecords)
-    .innerJoin(subdomains, eq(dnsRecords.subdomainId, subdomains.id))
-    .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
-    .where(and(eq(dnsRecords.id, body.id), eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active')))
-    .limit(1);
-  const current = rows[0];
-  if (!current) return NextResponse.json({ error: 'DNS record không tồn tại hoặc không thuộc quyền quản lý của bạn.' }, { status: 404 });
-  if (!current.parentDomain.cloudflareZoneId) return NextResponse.json({ error: 'Cloudflare chưa được cấu hình cho domain gốc này. Liên hệ Admin.' }, { status: 409 });
-  const validated = validateDnsRecord(body);
-  if ('error' in validated) return NextResponse.json(validated, { status: 400 });
-
+async function mutate(request: NextRequest, kind: 'create' | 'update' | 'delete') {
+  if (!trustedMutation(request)) return NextResponse.json({ error: 'Invalid request origin.' }, { status: 403 });
+  const session = await getOwnerSession(request);
+  if (!session) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
+  const limits = await Promise.all([
+    enforceRegistryRateLimit(request, 'dns-write-ip', 30, 60_000),
+    enforceRegistryScopedRateLimit('dns-write-owner', session.owner.id, 10, 60_000),
+    enforceRegistryScopedRateLimit('dns-write-global', 'registry', 60, 60_000),
+    enforceRegistryScopedRateLimit('dns-write-owner-daily', session.owner.id, 200, 86400_000),
+    enforceRegistryScopedRateLimit('dns-write-global-daily', 'registry', 1000, 86400_000),
+  ]);
+  if (limits.some((l) => !l.allowed)) return NextResponse.json({ error: 'Đã đạt giới hạn thao tác DNS. Hãy thử lại sau.' }, { status: 429, headers: { 'Retry-After': String(Math.max(...limits.filter((l) => !l.allowed).map((l) => l.retryAfterSeconds))) } });
   try {
-    await updateCloudflareRecord(
-      current.record.cloudflareRecordId,
-      fullRecordName(current.domain.label, validated.value.recordName, current.parentDomain.hostname),
-      validated.value,
-      `Takeshi Domains owner ${owner.id}`,
-      current.parentDomain.cloudflareZoneId,
-    );
+    const body = kind === 'delete' ? {} : await readJson(request);
+    const recordId = kind === 'delete' ? request.nextUrl.searchParams.get('id') : body.id;
+    const suppliedId = request.headers.get('idempotency-key');
+    if (suppliedId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(suppliedId)) throw new HttpError('Invalid operation ID.');
+    let subdomainId = body.subdomainId;
+    if (kind !== 'create') {
+      if (!validId(recordId)) throw new HttpError('Missing DNS record.');
+      const [row] = await getDb().select({ subdomainId: subdomains.id }).from(dnsRecords).innerJoin(subdomains, eq(dnsRecords.subdomainId, subdomains.id))
+        .where(and(eq(dnsRecords.id, recordId), eq(subdomains.ownerId, session.owner.id))).limit(1);
+      if (!row) {
+        // A DELETE retry may arrive after the original response was lost.
+        if (kind === 'delete' && suppliedId) {
+          const [old] = await getDb().select().from(dnsOperations).where(and(eq(dnsOperations.id, suppliedId), eq(dnsOperations.ownerId, session.owner.id), eq(dnsOperations.kind, 'delete')));
+          const p = old?.payload as { recordId?: string } | undefined;
+          if (old?.status === 'done' && p?.recordId === recordId) return NextResponse.json(old.result);
+        }
+        throw new HttpError('Record không tồn tại.', 404);
+      }
+      subdomainId = row.subdomainId;
+    }
+    if (!validId(subdomainId)) throw new HttpError('Missing subdomain.');
+    const validated = kind === 'delete' ? null : validateDnsRecord(body);
+    if (validated && 'error' in validated) throw new HttpError(validated.error);
+    const op = await beginDnsOperation({
+      id: suppliedId ?? crypto.randomUUID(), kind, ownerId: session.owner.id, subdomainId,
+      ...(typeof recordId === 'string' ? { recordId } : {}),
+      ...(validated && 'value' in validated ? { after: validated.value } : {}),
+    });
+    const result = op.unchanged ? { ok: true } : await runDnsOperation(op.id);
+    if ('pending' in result && result.pending) after(async () => { try { await resumeDnsOperations(session.owner.id, 1); } catch { console.warn('DNS reconciliation deferred.'); } });
+    return NextResponse.json(result, { status: 'pending' in result && result.pending ? 202 : 200 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Cloudflare DNS rejected this record.' }, { status: 502 });
+    if (error instanceof HttpError) return errorResponse(error);
+    console.error('DNS operation could not be accepted.');
+    return NextResponse.json({ error: 'Không thể xử lý DNS lúc này. Hãy tải lại panel trước khi thử lại.' }, { status: 503 });
   }
-  const now = Date.now();
-  await getDb().update(dnsRecords).set({ ...validated.value, updatedAt: now }).where(eq(dnsRecords.id, current.record.id));
-  await getDb().insert(dnsEvents).values({
-    id: crypto.randomUUID(),
-    subdomainId: current.domain.id,
-    domainLabel: current.domain.label,
-    parentDomain: current.parentDomain.hostname,
-    recordId: current.record.id,
-    actorType: 'owner',
-    action: current.record.isPrimary ? 'primary_record_updated' : 'child_record_updated',
-    details: {
-      before: {
-        ...auditRecordSummary(current.record),
-      },
-      after: {
-        ...auditRecordSummary(validated.value),
-      },
-      contentChanged: current.record.content !== validated.value.content,
-      isPrimary: current.record.isPrimary,
-    },
-    createdAt: now,
-  });
-  notifyOwnerAboutDnsChange({
-    ownerId: owner.id,
-    action: 'updated',
-    domainLabel: current.domain.label,
-    parentDomain: current.parentDomain.hostname,
-    recordType: validated.value.recordType,
-    recordName: validated.value.recordName,
-  });
-  return NextResponse.json({ ok: true });
 }
-
-export async function DELETE(request: NextRequest) {
-  const owner = await currentOwner(request);
-  if (!owner) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
-  const id = request.nextUrl.searchParams.get('id');
-  if (!id) return NextResponse.json({ error: 'Missing DNS record.' }, { status: 400 });
-  const rows = await getDb()
-    .select({ record: dnsRecords, domain: subdomains, parentDomain: managedDomains })
-    .from(dnsRecords)
-    .innerJoin(subdomains, eq(dnsRecords.subdomainId, subdomains.id))
-    .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
-    .where(and(eq(dnsRecords.id, id), eq(subdomains.ownerId, owner.id), eq(subdomains.status, 'active')))
-    .limit(1);
-  const current = rows[0];
-  if (!current) return NextResponse.json({ error: 'DNS record không tồn tại hoặc không thuộc quyền quản lý của bạn.' }, { status: 404 });
-  if (!current.parentDomain.cloudflareZoneId) return NextResponse.json({ error: 'Cloudflare chưa được cấu hình cho domain gốc này. Liên hệ Admin.' }, { status: 409 });
-  if (current.record.isPrimary) return NextResponse.json({ error: 'Primary record cannot be deleted here. Use the remove-subdomain action instead.' }, { status: 409 });
-  try {
-    await deleteCloudflareRecord(current.record.cloudflareRecordId, current.parentDomain.cloudflareZoneId);
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Cloudflare DNS rejected this record.' }, { status: 502 });
-  }
-  const now = Date.now();
-  await getDb().delete(dnsRecords).where(eq(dnsRecords.id, current.record.id));
-  await getDb().insert(dnsEvents).values({
-    id: crypto.randomUUID(),
-    subdomainId: current.domain.id,
-    domainLabel: current.domain.label,
-    parentDomain: current.parentDomain.hostname,
-    recordId: current.record.id,
-    actorType: 'owner',
-    action: 'child_record_deleted',
-    details: { ...auditRecordSummary(current.record), isPrimary: false },
-    createdAt: now,
-  });
-  notifyOwnerAboutDnsChange({
-    ownerId: owner.id,
-    action: 'deleted',
-    domainLabel: current.domain.label,
-    parentDomain: current.parentDomain.hostname,
-    recordType: current.record.recordType,
-    recordName: current.record.recordName,
-  });
-  return NextResponse.json({ ok: true });
-}
+export async function POST(request: NextRequest) { return mutate(request, 'create'); }
+export async function PATCH(request: NextRequest) { return mutate(request, 'update'); }
+export async function DELETE(request: NextRequest) { return mutate(request, 'delete'); }

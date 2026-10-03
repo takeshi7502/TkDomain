@@ -1,6 +1,7 @@
 import { bigint, boolean, index, integer, jsonb, pgTable, text, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
-// This stable row is seeded by `ensureRegistrySchema`. Keeping a default makes
+// This stable row is seeded by the explicit migration. Keeping a default makes
 // the multi-domain migration backwards compatible while older API/UI callers
 // still create takeshi.dev claims without sending an explicit parent domain.
 export const TAKESHI_DEV_MANAGED_DOMAIN_ID = 'managed-domain-takeshi-dev';
@@ -53,7 +54,7 @@ export const subdomainRequests = pgTable(
     approvalEmailError: text('approval_email_error'),
     telegramUsername: text('telegram_username'),
     requestedAccessKeyHash: text('requested_access_key_hash'),
-    status: text('status', { enum: ['pending', 'active', 'rejected', 'cancelled', 'released'] }).notNull().default('pending'),
+    status: text('status', { enum: ['pending', 'active', 'rejected', 'cancelled', 'released', 'expired'] }).notNull().default('pending'),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     reviewedAt: bigint('reviewed_at', { mode: 'number' }),
     reviewStartedAt: bigint('review_started_at', { mode: 'number' }),
@@ -67,6 +68,9 @@ export const subdomainRequests = pgTable(
     index('idx_subdomain_requests_status_created').on(table.status, table.createdAt),
     index('idx_subdomain_requests_email_created').on(table.email, table.createdAt),
     index('idx_subdomain_requests_telegram_created').on(table.telegramUsername, table.createdAt),
+    index('idx_subdomain_requests_created_id').on(table.createdAt, table.id),
+    uniqueIndex('idx_subdomain_requests_open_parent_subdomain').on(table.parentDomainId, table.subdomain).where(sql`${table.status} IN ('pending', 'active')`),
+    uniqueIndex('idx_subdomain_requests_pending_access_key_unique').on(table.requestedAccessKeyHash).where(sql`${table.status} = 'pending' AND ${table.requestedAccessKeyHash} IS NOT NULL`),
   ],
 );
 
@@ -82,7 +86,7 @@ export const owners = pgTable(
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
   },
-  (table) => [index('idx_owners_access_key_hash').on(table.accessKeyHash)],
+  (table) => [index('idx_owners_access_key_hash').on(table.accessKeyHash), uniqueIndex('idx_owners_access_key_hash_unique').on(table.accessKeyHash).where(sql`${table.accessKeyHash} IS NOT NULL`)],
 );
 
 export const subdomains = pgTable(
@@ -95,7 +99,7 @@ export const subdomains = pgTable(
       .default(TAKESHI_DEV_MANAGED_DOMAIN_ID)
       .references(() => managedDomains.id, { onDelete: 'restrict' }),
     ownerId: text('owner_id').notNull().references(() => owners.id, { onDelete: 'restrict' }),
-    status: text('status', { enum: ['active', 'suspended'] }).notNull().default('active'),
+    status: text('status', { enum: ['active', 'suspended', 'deleting'] }).notNull().default('active'),
     requestId: text('request_id').references(() => subdomainRequests.id, { onDelete: 'set null' }),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
     updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
@@ -126,6 +130,7 @@ export const dnsRecords = pgTable(
   (table) => [
     index('idx_dns_records_subdomain_name').on(table.subdomainId, table.recordName),
     uniqueIndex('dns_records_identity_unique').on(table.subdomainId, table.recordType, table.recordName, table.content),
+    uniqueIndex('idx_dns_records_one_primary').on(table.subdomainId).where(sql`${table.isPrimary} = TRUE`),
   ],
 );
 
@@ -264,6 +269,9 @@ export const telegramWebhookUpdates = pgTable(
   {
     updateId: text('update_id').primaryKey(),
     processedAt: bigint('processed_at', { mode: 'number' }).notNull(),
+    status: text('status', { enum: ['processing', 'done'] }).notNull().default('done'),
+    leaseToken: text('lease_token'),
+    leaseUntil: bigint('lease_until', { mode: 'number' }).notNull().default(0),
   },
   (table) => [index('idx_telegram_webhook_updates_processed').on(table.processedAt)],
 );
@@ -285,5 +293,27 @@ export const dnsEvents = pgTable(
     details: jsonb('details').notNull().default({}),
     createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   },
-  (table) => [index('idx_dns_events_subdomain_created').on(table.subdomainId, table.createdAt)],
+  (table) => [index('idx_dns_events_subdomain_created').on(table.subdomainId, table.createdAt), index('idx_dns_events_created_id').on(table.createdAt, table.id)],
 );
+
+/** Durable DNS journal: unfinished operations block other mutations of a domain. */
+export const dnsOperations = pgTable('dns_operations', {
+  id: text('id').primaryKey(),
+  subdomainId: text('subdomain_id').notNull(),
+  ownerId: text('owner_id').notNull(),
+  kind: text('kind', { enum: ['create', 'update', 'delete', 'release'] }).notNull(),
+  status: text('status', { enum: ['pending', 'done', 'failed'] }).notNull().default('pending'),
+  payload: jsonb('payload').notNull(), result: jsonb('result'),
+  leaseToken: text('lease_token'), leaseUntil: bigint('lease_until', { mode: 'number' }).notNull().default(0),
+  attempts: integer('attempts').notNull().default(0), lastError: text('last_error'),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(), updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+}, (t) => [uniqueIndex('idx_dns_operations_pending_domain').on(t.subdomainId).where(sql`${t.status} = 'pending'`), index('idx_dns_operations_retry').on(t.status, t.leaseUntil)]);
+
+export const notificationJobs = pgTable('notification_jobs', {
+  id: text('id').primaryKey(), requestId: text('request_id').notNull().references(() => subdomainRequests.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['receipt', 'approval', 'admin_telegram'] }).notNull(),
+  status: text('status', { enum: ['pending', 'done', 'failed'] }).notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0), nextAttemptAt: bigint('next_attempt_at', { mode: 'number' }).notNull(),
+  leaseToken: text('lease_token'), leaseUntil: bigint('lease_until', { mode: 'number' }).notNull().default(0),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(), updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+}, (t) => [uniqueIndex('idx_notification_jobs_identity').on(t.requestId, t.kind), index('idx_notification_jobs_retry').on(t.status, t.nextAttemptAt)]);

@@ -1,6 +1,6 @@
 'use client';
 
-import { FocusEvent, FormEvent, useEffect, useState } from 'react';
+import { FocusEvent, FormEvent, useEffect, useRef, useState } from 'react';
 
 import { useToast } from '@/app/components/ToastProvider';
 import { UserLanguageToggle, useUserLanguage } from '@/app/components/UserLanguageToggle';
@@ -10,7 +10,7 @@ type SubmissionState =
   | { type: 'idle' }
   | { type: 'loading' }
   | { type: 'error'; message: string }
-  | { type: 'success'; requestId: string; requestEmail: 'accepted' | 'not_configured' | 'failed' | 'busy' };
+  | { type: 'success'; requestId: string; requestEmail: 'queued' | 'accepted' | 'not_configured' | 'failed' | 'busy' };
 type AvailabilityState = 'idle' | 'checking' | 'available' | 'taken' | 'error';
 type FieldName = 'subdomain' | 'parentDomain' | 'recordContent' | 'recordPriority' | 'telegramUsername' | 'notificationEmail' | 'rules';
 type FieldState = { kind: 'idle' | 'valid' | 'invalid'; message: string };
@@ -99,6 +99,7 @@ function formatRetryAfter(retryAfterSeconds: number | undefined, language: 'vi' 
 export default function Home() {
   const { language, setLanguage } = useUserLanguage();
   const { pushToast } = useToast();
+  const availabilitySequence = useRef(0);
   const [subdomain, setSubdomain] = useState('');
   const [registryDomains, setRegistryDomains] = useState<RegistryDomain[]>([defaultRegistryDomain]);
   const [parentDomainId, setParentDomainId] = useState(defaultRegistryDomain.id);
@@ -152,7 +153,9 @@ export default function Home() {
           ? `Request received for ${hostname}. Request ID: ${submission.requestId.slice(0, 8)}.`
           : `Đã nhận yêu cầu cho ${hostname}. Mã request: ${submission.requestId.slice(0, 8)}.`,
       });
-      if (submission.requestEmail === 'accepted') {
+      if (submission.requestEmail === 'queued') {
+        pushToast({ tone: 'info', text: language === 'en' ? 'Your confirmation email is queued. You will receive your access key after approval.' : 'Email xác nhận đang được gửi. Access key sẽ gửi qua email sau khi được duyệt.' });
+      } else if (submission.requestEmail === 'accepted') {
         pushToast({ tone: 'success', text: language === 'en' ? 'A confirmation email was sent. You will receive another email after approval.' : 'Email xác nhận đã được gửi. Bạn sẽ nhận thêm thư khi yêu cầu được duyệt.' });
       } else {
         pushToast({ tone: 'error', text: language === 'en' ? 'Your request was saved, but its confirmation email could not be sent. The admin still received your request.' : 'Yêu cầu đã được lưu nhưng chưa gửi được email xác nhận. Admin vẫn nhận được yêu cầu.' });
@@ -238,6 +241,7 @@ export default function Home() {
   }
 
   function cleanSubdomain(value: string) {
+    availabilitySequence.current += 1;
     setSubdomain(value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 63));
     setAvailability('idle');
     setAvailabilityMessage('');
@@ -247,7 +251,7 @@ export default function Home() {
   useEffect(() => {
     let mounted = true;
 
-    void fetch('/api/registry-domains', { cache: 'no-store' })
+    void fetch('/api/registry-domains', { signal: AbortSignal.timeout(20_000) })
       .then(async (response) => {
         const payload = await response.json() as { domains?: RegistryDomain[] };
         if (!response.ok || !Array.isArray(payload.domains) || !mounted) return;
@@ -256,6 +260,7 @@ export default function Home() {
           typeof domain.id === 'string' && typeof domain.hostname === 'string'
         ));
         setRegistryDomains(domains);
+        availabilitySequence.current += 1;
         setParentDomainId((current) => (
           domains.some((domain) => domain.id === current) ? current : (domains[0]?.id ?? '')
         ));
@@ -270,6 +275,7 @@ export default function Home() {
   }, []);
 
   function selectParentDomain(value: string) {
+    availabilitySequence.current += 1;
     setParentDomainId(value);
     setAvailability('idle');
     setAvailabilityMessage('');
@@ -285,6 +291,7 @@ export default function Home() {
   }
 
   async function checkAvailability(): Promise<AvailabilityState> {
+    const seq = ++availabilitySequence.current;
     markTouched('subdomain');
     if (!subdomain.trim()) {
       setAvailability('idle');
@@ -308,9 +315,9 @@ export default function Home() {
     setAvailability('checking');
     setAvailabilityMessage('');
     try {
-      const response = await fetch(`/api/requests?subdomain=${encodeURIComponent(candidate)}&domainId=${encodeURIComponent(candidateParentDomainId)}`);
+      const response = await fetch(`/api/requests?subdomain=${encodeURIComponent(candidate)}&domainId=${encodeURIComponent(candidateParentDomainId)}`, { signal: AbortSignal.timeout(20_000) });
       const payload = await response.json() as { available?: boolean; error?: string };
-      if (candidate !== subdomain || candidateParentDomainId !== parentDomainId) return 'idle';
+      if (seq !== availabilitySequence.current) return 'idle';
       if (!response.ok) {
         setAvailability('error');
         setAvailabilityMessage(language === 'en' ? 'Unable to check this name right now.' : (payload.error ?? 'Không thể kiểm tra tên lúc này.'));
@@ -321,7 +328,7 @@ export default function Home() {
       setAvailabilityMessage(payload.available ? t('✓ Tên có thể dùng.', '✓ This name is available.') : t('Tên đã được đăng ký hoặc đang chờ duyệt.', 'This name is already registered or awaiting review.'));
       return result;
     } catch {
-      if (candidate === subdomain && candidateParentDomainId === parentDomainId) {
+      if (seq === availabilitySequence.current) {
         setAvailability('error');
         setAvailabilityMessage(t('Không thể kết nối registry. Hãy thử lại.', 'Unable to reach the registry. Please try again.'));
       }
@@ -364,11 +371,12 @@ export default function Home() {
     setSubmission({ type: 'loading' });
     try {
       const response = await fetch('/api/requests', {
+        signal: AbortSignal.timeout(25_000),
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subdomain, parentDomainId, recordType, recordContent, recordPriority: recordType === 'MX' && recordPriority !== '' ? Number(recordPriority) : null, telegramUsername, notificationEmail, notificationLanguage: language, acceptedRules, website }),
       });
-      const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId' | 'recordType'; requestId?: string; requestEmail?: 'accepted' | 'not_configured' | 'failed' | 'busy'; retryAfterSeconds?: number };
+      const payload = await response.json() as { error?: string; field?: FieldName | 'parentDomainId' | 'recordType'; requestId?: string; requestEmail?: 'queued' | 'accepted' | 'not_configured' | 'failed' | 'busy'; retryAfterSeconds?: number };
       if (!response.ok || !payload.requestId) {
         if (payload.field) {
           const field = payload.field === 'parentDomainId' ? 'parentDomain' : payload.field === 'recordType' ? 'recordContent' : payload.field;

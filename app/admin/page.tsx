@@ -5,9 +5,9 @@ import Link from 'next/link';
 
 import { useNoticeToast } from '@/app/components/ToastProvider';
 
-type RequestStatus = 'pending' | 'active' | 'rejected' | 'cancelled' | 'released';
+type RequestStatus = 'pending' | 'active' | 'rejected' | 'cancelled' | 'released' | 'expired';
 type DashboardTab = 'active-subdomains' | 'pending-requests' | 'request-log' | 'dns-log' | 'domains';
-type ApprovalEmailResult = 'accepted' | 'not_requested' | 'not_configured' | 'failed' | 'busy' | 'manual_check' | 'key_changed' | 'inactive';
+type ApprovalEmailResult = 'queued' | 'accepted' | 'not_requested' | 'not_configured' | 'failed' | 'busy' | 'manual_check' | 'key_changed' | 'inactive';
 
 type RequestRecord = {
   id: string;
@@ -54,7 +54,7 @@ type ActiveSubdomain = {
   updatedAt: number;
   telegramUsername: string | null;
   recordCount: number;
-  records: AdminDnsRecord[];
+  records?: AdminDnsRecord[];
 };
 
 type DnsEvent = {
@@ -82,7 +82,8 @@ type ManagedDomain = {
 
 type Notice = { tone: 'success' | 'error' | 'info'; text: string } | null;
 type AdminState = 'idle' | 'loading';
-type DashboardPayload = { error?: string; requests?: RequestRecord[]; activeSubdomains?: ActiveSubdomain[]; dnsEvents?: DnsEvent[]; domains?: ManagedDomain[] };
+type Summary = { active: number; pending: number; requests: number; events: number; domains: number; revision: string };
+type DashboardPayload = { summary?: Summary; hasMore?: boolean; error?: string; requests?: RequestRecord[]; activeSubdomains?: ActiveSubdomain[]; dnsEvents?: DnsEvent[]; domains?: ManagedDomain[] };
 type DomainMutationPayload = { error?: string; domains?: ManagedDomain[] };
 
 const tabs: Array<{ id: DashboardTab; label: string }> = [
@@ -112,6 +113,7 @@ function requestStatusLabel(status: RequestStatus) {
     rejected: 'Đã từ chối',
     cancelled: 'Người dùng đã hủy',
     released: 'Đã trả lại',
+    expired: 'Đã hết hạn',
   };
   return labels[status];
 }
@@ -133,6 +135,7 @@ function approvalEmailStatus(request: RequestRecord) {
 
 function approvalEmailNotice(result: ApprovalEmailResult | undefined, successText: string): Notice {
   if (!result || result === 'not_requested') return { tone: 'success', text: successText };
+  if (result === 'queued') return { tone: 'success', text: `${successText} Email đã được xếp hàng gửi.` };
   if (result === 'accepted') return { tone: 'success', text: `${successText} Email duyệt đã được gửi.` };
   if (result === 'not_configured') return { tone: 'error', text: `${successText} Chưa gửi email vì Vercel còn thiếu RESEND_API_KEY hoặc EMAIL_FROM.` };
   if (result === 'busy') return { tone: 'info', text: 'Email đang được xử lý hoặc vừa được thử gửi. Hãy chờ ít nhất 1 phút rồi tải lại.' };
@@ -198,6 +201,16 @@ export default function AdminPage() {
   const [dnsEvents, setDnsEvents] = useState<DnsEvent[]>([]);
   const [domains, setDomains] = useState<ManagedDomain[]>([]);
   const [activeTab, setActiveTab] = useState<DashboardTab>('active-subdomains');
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [recordDetails, setRecordDetails] = useState<Record<string, AdminDnsRecord[]>>({});
+  const [recordMore, setRecordMore] = useState<Record<string, boolean>>({});
+  const [loadingRecords, setLoadingRecords] = useState<string | null>(null);
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
+  const recordDetailsRef = useRef<Record<string, AdminDnsRecord[]>>({});
+  const requestSeq = useRef(0);
+  const revision = useRef('');
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
   const [state, setState] = useState<AdminState>('idle');
   const [notice, setNotice] = useState<Notice>(null);
@@ -226,66 +239,74 @@ export default function AdminPage() {
   const pendingRequests = requests.filter((request) => request.status === 'pending');
 
   const loadDashboard = useCallback(async ({ clearNotice = true, silent = false }: { clearNotice?: boolean; silent?: boolean } = {}) => {
-    if (!silent) {
-      stateRef.current = 'loading';
-      setState('loading');
-    }
+    const seq = ++requestSeq.current;
+    if (!silent) { stateRef.current = 'loading'; setState('loading'); }
     if (clearNotice) setNotice(null);
     try {
-      const response = await fetch('/api/admin/requests', { cache: 'no-store' });
+      if (silent) {
+        const check = await fetch('/api/admin/requests?tab=summary', { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+        if (check.status === 401) { setAdminAuthenticated(false); setDashboardLoaded(false); return; }
+        if (!check.ok) return;
+        const counts = await check.json() as DashboardPayload;
+        if (seq !== requestSeq.current) return;
+        if (counts.summary) setSummary(counts.summary);
+        if (counts.summary?.revision === revision.current) return;
+      }
+      const response = await fetch(`/api/admin/requests?tab=${activeTab}&page=${page}`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
       const payload = await response.json() as DashboardPayload;
-      if (!response.ok || !Array.isArray(payload.requests)) {
-        if (response.status === 401) {
-          setAdminAuthenticated(false);
-          setDashboardLoaded(false);
-          setRequests([]);
-          setActiveSubdomains([]);
-          setDnsEvents([]);
-          setDomains([]);
-        }
+      if (seq !== requestSeq.current) return;
+      if (!response.ok) {
+        if (response.status === 401) { setAdminAuthenticated(false); setDashboardLoaded(false); return; }
         throw new Error(payload.error ?? 'Không thể tải dữ liệu quản trị.');
       }
-      if (silent && !authenticatedRef.current) return;
-      setRequests(payload.requests);
-      const nextSubdomains = Array.isArray(payload.activeSubdomains) ? payload.activeSubdomains : [];
-      setActiveSubdomains(nextSubdomains);
-      setExpandedSubdomainId((current) => nextSubdomains.some((domain) => domain.id === current) ? current : null);
-      setDnsEvents(Array.isArray(payload.dnsEvents) ? payload.dnsEvents : []);
-      setDomains(Array.isArray(payload.domains) ? payload.domains : []);
+      setAdminAuthenticated(true);
+      setRequests(payload.requests ?? []);
+      const domains = payload.activeSubdomains ?? [];
+      setActiveSubdomains(domains);
+      setExpandedSubdomainId((id) => domains.some((d) => d.id === id) ? id : null);
+      setDnsEvents(payload.dnsEvents ?? []);
+      setDomains(payload.domains ?? []);
+      setSummary(payload.summary ?? null);
+      setHasMore(Boolean(payload.hasMore));
+      revision.current = payload.summary?.revision ?? '';
+      recordDetailsRef.current = {};
+      setRecordDetails({});
+      setRecordMore({});
       setDashboardLoaded(true);
     } catch (error) {
-      if (!silent) {
-        setDashboardLoaded(false);
-        setRequests([]);
-        setActiveSubdomains([]);
-        setDnsEvents([]);
-        setDomains([]);
-        setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể tải dữ liệu quản trị.' });
-      }
+      if (!silent && seq === requestSeq.current) setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể tải dashboard.' });
     } finally {
-      if (!silent) {
-        stateRef.current = 'idle';
-        setState('idle');
-      }
+      if (seq === requestSeq.current) { setSessionChecked(true); if (!silent) { stateRef.current = 'idle'; setState('idle'); } }
     }
-  }, [setAdminAuthenticated]);
+  }, [activeTab, page, setAdminAuthenticated]);
 
   useEffect(() => {
-    let mounted = true;
-    void (async () => {
-      try {
-        const response = await fetch('/api/admin/session', { cache: 'no-store' });
-        if (!response.ok || !mounted) return;
-        setAdminAuthenticated(true);
-        await loadDashboard({ clearNotice: false });
-      } catch {
-        if (mounted) setNotice({ tone: 'error', text: 'Không thể khôi phục phiên admin. Hãy thử lại.' });
-      } finally {
-        if (mounted) setSessionChecked(true);
-      }
-    })();
-    return () => { mounted = false; };
-  }, [loadDashboard, setAdminAuthenticated]);
+    const timer = window.setTimeout(() => { void loadDashboard({ clearNotice: false }); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadDashboard]);
+
+  const loadRecordDetails = useCallback(async (id: string, append = false) => {
+    setLoadingRecords(id);
+    try {
+      const nextPage = append ? Math.floor((recordDetailsRef.current[id]?.length ?? 0) / 50) : 0;
+      const response = await fetch(`/api/admin/requests?subdomainId=${encodeURIComponent(id)}&page=${nextPage}`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+      const data = await response.json() as { records?: AdminDnsRecord[]; error?: string; hasMore?: boolean };
+      if (!response.ok || !data.records) throw new Error(data.error ?? 'Không thể tải records.');
+      const records = append ? [...(recordDetailsRef.current[id] ?? []), ...data.records] : data.records;
+      recordDetailsRef.current = { ...recordDetailsRef.current, [id]: records };
+      setRecordDetails(recordDetailsRef.current);
+      setRecordMore((current) => ({ ...current, [id]: Boolean(data.hasMore) }));
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Không thể tải records.' });
+    } finally { setLoadingRecords((current) => current === id ? null : current); }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (expandedSubdomainId && !recordDetails[expandedSubdomainId]) void loadRecordDetails(expandedSubdomainId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [expandedSubdomainId, recordDetails, loadRecordDetails]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -298,7 +319,7 @@ export default function AdminPage() {
       if (document.visibilityState === 'visible') poll();
     };
     window.addEventListener('visibilitychange', refreshWhenVisible);
-    const interval = window.setInterval(poll, 15_000);
+    const interval = window.setInterval(poll, 30_000);
     return () => {
       window.removeEventListener('visibilitychange', refreshWhenVisible);
       window.clearInterval(interval);
@@ -329,6 +350,7 @@ export default function AdminPage() {
   }
 
   async function logout() {
+    requestSeq.current += 1;
     stateRef.current = 'loading';
     setState('loading');
     try {
@@ -526,7 +548,7 @@ export default function AdminPage() {
         closeRejectEditor();
         void review(id, action);
       }}
-      disabled={busy}
+      disabled={busy || state !== 'idle'}
       title={busy ? 'Đang xử lý' : label}
       aria-label={busy ? 'Đang xử lý' : label}
     >{busy ? '…' : symbol}</button>;
@@ -588,6 +610,7 @@ export default function AdminPage() {
   }
 
   function renderDashboard() {
+    if (state === 'loading' && authenticated) return <div className="panel empty-state">Đang tải dữ liệu...</div>;
     if (!dashboardLoaded) return <div className="panel empty-state">{sessionChecked ? 'Nhập admin key để tải dashboard.' : 'Đang khôi phục phiên admin...'}</div>;
 
     if (activeTab === 'domains') {
@@ -638,7 +661,7 @@ export default function AdminPage() {
         ? <div className="panel empty-state">Chưa có subdomain nào đang hoạt động.</div>
         : <div className="request-list">{activeSubdomains.map((domain) => {
           const expanded = expandedSubdomainId === domain.id;
-          const records = domain.records ?? [];
+          const records = recordDetails[domain.id] ?? [];
           return <article className={`panel admin-list-row${expanded ? ' expanded' : ''}`} key={domain.id}>
             <div className="admin-row-main">
               <button
@@ -667,7 +690,8 @@ export default function AdminPage() {
                 <div><p className="eyebrow"><span className="pixel-dot" /> DNS RECORDS</p><p>Toàn bộ record đang thuộc <strong>{domain.label}.{domain.parentDomain}</strong>.</p></div>
                 <span className="status">{records.length} records</span>
               </div>
-              {records.length === 0
+              {loadingRecords === domain.id && <p className="note">Đang tải records...</p>}
+              {records.length === 0 && loadingRecords !== domain.id
                 ? <p className="admin-records-empty">Chưa có DNS record nào trong database.</p>
                 : <div className="admin-record-list">{records.map((record) => <article className={`admin-dns-record${record.isPrimary ? ' primary' : ''}`} key={record.id}>
                   <span className="admin-record-type">{record.recordType}</span>
@@ -677,6 +701,7 @@ export default function AdminPage() {
                     <small>{ttlLabel(record.ttl)}{record.proxied ? ' · proxied' : ' · DNS only'}</small>
                   </div>
                 </article>)}</div>}
+              {recordMore[domain.id] && <button className="button secondary-action" type="button" disabled={loadingRecords === domain.id} onClick={() => void loadRecordDetails(domain.id, true)}>Tải thêm record</button>}
             </section>}
           </article>;
         })}</div>;
@@ -724,7 +749,8 @@ export default function AdminPage() {
           <button type="submit" className="button" disabled={state === 'loading'}>{state === 'loading' ? 'Đang mở...' : 'Mở dashboard'}</button>
         </form>}
         {authenticated && accessKey && <section className="panel owner-key-panel"><p className="eyebrow"><span className="pixel-dot" /> OWNER ACCESS KEY</p><h2>{accessKey.subdomain}</h2><code>{accessKey.value}</code><p className="note">Gửi key này qua kênh riêng. Tạo key mới sẽ hủy các phiên panel cũ.</p><button type="button" className="text-button" onClick={() => setAccessKey(null)}>Đã sao chép</button></section>}
-        {authenticated && dashboardLoaded && <nav className="admin-tabs" role="tablist" aria-label="Dashboard quản trị">{tabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'button' : 'button secondary-action'} onClick={() => setActiveTab(tab.id)}>{tab.label}{tab.id === 'pending-requests' && pendingRequests.length > 0 ? ` (${pendingRequests.length})` : ''}</button>)}</nav>}
+        {authenticated && dashboardLoaded && <nav className="admin-tabs" role="tablist" aria-label="Dashboard quản trị">{tabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'button' : 'button secondary-action'} onClick={() => { setPage(0); setActiveTab(tab.id); }}>{tab.label}{tab.id === 'pending-requests' && (summary?.pending ?? 0) > 0 ? ` (${summary?.pending})` : ''}</button>)}</nav>}
+        {authenticated && dashboardLoaded && <div className="admin-session-actions"><button className="text-button" type="button" disabled={page === 0 || state !== 'idle'} onClick={() => setPage((p) => p - 1)}>← Trang trước</button><span className="note">Trang {page + 1}</span><button className="text-button" type="button" disabled={!hasMore || state !== 'idle'} onClick={() => setPage((p) => p + 1)}>Trang sau →</button><button className="text-button" type="button" disabled={maintenanceBusy} onClick={async () => { setMaintenanceBusy(true); try { const r = await fetch('/api/maintenance', { method: 'POST', signal: AbortSignal.timeout(120_000) }); if (!r.ok) throw new Error(); setNotice({ tone: 'success', text: 'Đã chạy kiểm tra đồng bộ và retry thông báo.' }); await loadDashboard({ clearNotice: false }); } catch { setNotice({ tone: 'error', text: 'Không thể chạy kiểm tra lúc này.' }); } finally { setMaintenanceBusy(false); } }}>{maintenanceBusy ? 'Đang đồng bộ...' : 'Kiểm tra đồng bộ'}</button></div>}
         {(authenticated || !sessionChecked) && <section className="admin-tab-panel" role="tabpanel">{renderDashboard()}</section>}
       </div>
     </main>

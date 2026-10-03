@@ -1,13 +1,13 @@
-import { and, asc, eq, gt, inArray } from 'drizzle-orm';
-import { NextRequest, NextResponse } from 'next/server';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { after, NextRequest, NextResponse } from 'next/server';
 
 import { ensureRegistrySchema, getDb } from '@/db';
-import { managedDomains, subdomainRequests } from '@/db/schema';
-import { createPendingRequestSession, createRequestAccessKey, hashOwnerAccessKey, setPendingRequestSessionCookie } from '@/lib/owner-auth';
-import { enforceRegistryRateLimit } from '@/lib/rate-limit';
+import { managedDomains, notificationJobs, pendingRequestSessions, subdomainRequests } from '@/db/schema';
+import { createPendingRequestSessionRecord, createRequestAccessKey, hashOwnerAccessKey, setPendingRequestSessionCookie } from '@/lib/owner-auth';
+import { enforceRegistryRateLimit, enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 import { isValidSubdomain, normalizeSubdomain, validateClaim } from '@/lib/registry';
-import { notifyRequestReceived } from '@/lib/request-email';
-import { notifyAdminOfNewRequest } from '@/lib/telegram';
+import { notificationValues, processNotifications } from '@/lib/notifications';
+import { errorResponse, HttpError, readJson } from '@/lib/http';
 
 const RESERVED_STATUSES = ['pending', 'active'] as const;
 const REQUEST_IP_LIMIT = 10;
@@ -49,8 +49,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const attemptLimit = await enforceRegistryRateLimit(request, 'request-attempt', 30, 60_000);
+  if (!attemptLimit.allowed) return retryAfterResponse('Quá nhiều lượt gửi. Hãy chờ một phút.', attemptLimit.retryAfterSeconds);
   let body: unknown;
-  try { body = await request.json(); } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
+  try { body = await readJson(request); } catch (error) { return errorResponse(error); }
 
   const claimInput = body !== null && typeof body === 'object'
     ? body as Parameters<typeof validateClaim>[0]
@@ -122,10 +124,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const globalLimit = await enforceRegistryScopedRateLimit('request-submit-global', 'registry', 60, 24 * 60 * 60_000);
+  if (!globalLimit.allowed) return retryAfterResponse('Registry đã đạt hạn mức đăng ký hôm nay. Hãy thử lại sau.', globalLimit.retryAfterSeconds);
   const id = crypto.randomUUID();
   const accessKeyHash = hashOwnerAccessKey(createRequestAccessKey(id));
+  const pendingSession = createPendingRequestSessionRecord(id);
   try {
-    await db.insert(subdomainRequests).values({
+    await db.transaction(async (tx) => {
+      const [currentParent] = await tx.select({ status: managedDomains.status }).from(managedDomains).where(eq(managedDomains.id, parentDomain.id)).for('share');
+      if (currentParent?.status !== 'active') throw new HttpError('Domain đã ngừng nhận đăng ký. Hãy chọn domain khác.', 409);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${'claim-telegram:' + result.value.telegramUsername}, 0))`);
+      const [{ total }] = await tx.select({ total: sql<number>`count(*)::integer` }).from(subdomainRequests)
+        .where(and(eq(subdomainRequests.telegramUsername, result.value.telegramUsername), gt(subdomainRequests.createdAt, now - TELEGRAM_REQUEST_WINDOW_MS)));
+      if (total >= TELEGRAM_REQUEST_LIMIT) throw new HttpError('Telegram này đã đạt hạn mức đăng ký trong 24 giờ.', 429);
+      await tx.insert(subdomainRequests).values({
       id,
       subdomain: result.value.subdomain,
       parentDomainId: parentDomain.id,
@@ -140,8 +152,12 @@ export async function POST(request: NextRequest) {
       requestedAccessKeyHash: accessKeyHash,
       status: 'pending',
       createdAt: now,
+      });
+      await tx.insert(notificationJobs).values(notificationValues(id, ['receipt', 'admin_telegram']));
+      await tx.insert(pendingRequestSessions).values(pendingSession.record);
     });
   } catch (error) {
+    if (error instanceof HttpError) return errorResponse(error);
     if (error instanceof Error && /duplicate|unique/i.test(error.message)) {
       return NextResponse.json({ error: 'Subdomain vừa được đăng ký bởi một request khác. Hãy kiểm tra lại.' }, { status: 409 });
     }
@@ -150,27 +166,10 @@ export async function POST(request: NextRequest) {
 
   // The registering browser can still view/cancel this pending request without
   // knowing the owner key, which is only delivered after approval.
-  let pendingSessionToken: string | null = null;
-  try {
-    pendingSessionToken = await createPendingRequestSession(id);
-  } catch {
-    console.error('Could not create pending request session', { requestId: id });
-  }
 
-  // Delivery failures must never invalidate a successfully stored request.
-  const [requestEmail] = await Promise.all([
-    notifyRequestReceived(id),
-    notifyAdminOfNewRequest({
-      requestId: id,
-      hostname: `${result.value.subdomain}.${parentDomain.hostname}`,
-      recordType: result.value.recordType,
-      recordContent: result.value.recordContent,
-      recordPriority: result.value.recordPriority,
-      telegramUsername: result.value.telegramUsername,
-    }),
-  ]);
-
-  const response = NextResponse.json({ ok: true, requestId: id, status: 'pending', requestEmail }, { status: 201 });
-  if (pendingSessionToken) setPendingRequestSessionCookie(response, pendingSessionToken);
+  // Jobs are already committed with the request. Response does not wait for providers.
+  after(async () => { try { await processNotifications(id); } catch { console.warn('Registration notifications deferred.'); } });
+  const response = NextResponse.json({ ok: true, requestId: id, status: 'pending', requestEmail: 'queued' }, { status: 201 });
+  setPendingRequestSessionCookie(response, pendingSession.token);
   return response;
 }

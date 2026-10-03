@@ -1,3 +1,4 @@
+import { readJson, errorResponse } from '@/lib/http';
 import { and, eq, inArray } from 'drizzle-orm';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -44,10 +45,8 @@ export async function PATCH(request: NextRequest) {
 
   let body: { currentAccessKey?: unknown; newAccessKey?: unknown };
   try {
-    body = await request.json() as { currentAccessKey?: unknown; newAccessKey?: unknown };
-  } catch {
-    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
-  }
+    body = await readJson(request) as { currentAccessKey?: unknown; newAccessKey?: unknown };
+  } catch (error) { return errorResponse(error); }
 
   const currentAccessKey = typeof body.currentAccessKey === 'string' ? body.currentAccessKey.trim() : '';
   const newAccessKey = typeof body.newAccessKey === 'string' ? body.newAccessKey.trim() : '';

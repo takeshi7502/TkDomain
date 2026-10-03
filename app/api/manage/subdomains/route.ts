@@ -1,9 +1,11 @@
-import { and, count, eq } from 'drizzle-orm';
-import { NextRequest, NextResponse } from 'next/server';
+import { readJson, errorResponse } from '@/lib/http';
+import { and, eq, inArray } from 'drizzle-orm';
+import { after, NextRequest, NextResponse } from 'next/server';
 
 import { getDb } from '@/db';
-import { dnsEvents, dnsRecords, managedDomains, owners, subdomainRequests, subdomains } from '@/db/schema';
-import { deleteCloudflareRecord } from '@/lib/cloudflare';
+import { managedDomains, subdomains } from '@/db/schema';
+import { beginDnsOperation, releaseInProgress, resumeDnsOperations, runDnsOperation } from '@/lib/dns-operations';
+import { HttpError, validId } from '@/lib/http';
 import { getOwnerSession } from '@/lib/owner-auth';
 import { enforceRegistryRateLimit, enforceRegistryScopedRateLimit } from '@/lib/rate-limit';
 import {
@@ -22,7 +24,7 @@ async function ownedActiveSubdomain(ownerId: string, subdomainId: string) {
     .select({ domain: subdomains, parentDomain: managedDomains })
     .from(subdomains)
     .innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
-    .where(and(eq(subdomains.id, subdomainId), eq(subdomains.ownerId, ownerId), eq(subdomains.status, 'active')))
+    .where(and(eq(subdomains.id, subdomainId), eq(subdomains.ownerId, ownerId), inArray(subdomains.status, ['active', 'deleting'])))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -46,7 +48,7 @@ export async function POST(request: NextRequest) {
   }
 
   let body: { subdomainId?: unknown; confirmation?: unknown };
-  try { body = await request.json() as typeof body; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
+  try { body = await readJson(request) as typeof body; } catch (error) { return errorResponse(error); }
   const subdomainId = typeof body.subdomainId === 'string' ? body.subdomainId : '';
   if (!subdomainId) return NextResponse.json({ error: 'Missing subdomain.' }, { status: 400 });
 
@@ -76,10 +78,11 @@ export async function DELETE(request: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
 
   let body: { subdomainId?: string; confirmation?: string; code?: string };
-  try { body = await request.json() as { subdomainId?: string; confirmation?: string; code?: string }; } catch { return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 }); }
-  if (!body.subdomainId) return NextResponse.json({ error: 'Missing subdomain.' }, { status: 400 });
+  try { body = await readJson(request) as { subdomainId?: string; confirmation?: string; code?: string }; } catch (error) { return errorResponse(error); }
+  if (!validId(body.subdomainId) || (body.code !== undefined && typeof body.code !== 'string')) return NextResponse.json({ error: 'Invalid subdomain or code.' }, { status: 400 });
+  const limit = await enforceRegistryScopedRateLimit('subdomain-release', session.owner.id, 6, 60_000);
+  if (!limit.allowed) return NextResponse.json({ error: 'Hãy chờ một phút trước khi thử lại.' }, { status: 429 });
 
-  const db = getDb();
   const domain = await ownedActiveSubdomain(session.owner.id, body.subdomainId);
   if (!domain) return NextResponse.json({ error: 'Subdomain not found.' }, { status: 404 });
   if (!domain.parentDomain.cloudflareZoneId) return NextResponse.json({ error: 'Cloudflare chưa được cấu hình cho domain gốc này. Liên hệ Admin.' }, { status: 409 });
@@ -87,6 +90,11 @@ export async function DELETE(request: NextRequest) {
   const hostname = `${domain.domain.label}.${domain.parentDomain.hostname}`;
   if (body.confirmation !== hostname) return NextResponse.json({ error: `Type ${hostname} exactly to confirm deletion.` }, { status: 400 });
 
+  const ongoing = await releaseInProgress(session.owner.id, domain.domain.id);
+  if (ongoing) {
+    const result = await runDnsOperation(ongoing);
+    return NextResponse.json(result, { status: result.pending ? 202 : 200 });
+  }
   const linkedTelegram = await getTelegramLinkForOwner(session.owner.id);
   if (linkedTelegram) {
     const [ipLimit, ownerLimit] = await Promise.all([
@@ -114,75 +122,13 @@ export async function DELETE(request: NextRequest) {
     }
   }
 
-  const records = await db.select({
-    id: dnsRecords.id,
-    cloudflareRecordId: dnsRecords.cloudflareRecordId,
-    recordType: dnsRecords.recordType,
-    recordName: dnsRecords.recordName,
-    ttl: dnsRecords.ttl,
-    proxied: dnsRecords.proxied,
-    priority: dnsRecords.priority,
-    isPrimary: dnsRecords.isPrimary,
-  }).from(dnsRecords).where(eq(dnsRecords.subdomainId, domain.domain.id));
   try {
-    for (const record of records) await deleteCloudflareRecord(record.cloudflareRecordId, domain.parentDomain.cloudflareZoneId);
+    const op = await beginDnsOperation({ id: crypto.randomUUID(), kind: 'release', ownerId: session.owner.id, subdomainId: domain.domain.id });
+    const result = await runDnsOperation(op.id);
+    if (result.pending) after(async () => { try { await resumeDnsOperations(session.owner.id, 1); } catch { console.warn('Subdomain release deferred.'); } });
+    return NextResponse.json(result, { status: result.pending ? 202 : 200 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Cloudflare could not remove every DNS record.' }, { status: 502 });
+    if (error instanceof HttpError) return errorResponse(error);
+    return NextResponse.json({ error: 'Không thể xử lý yêu cầu xóa. Hãy tải lại panel.' }, { status: 503 });
   }
-
-  const now = Date.now();
-  let ownerDeleted: boolean;
-  try {
-    ownerDeleted = await db.transaction(async (tx) => {
-      await tx.insert(dnsEvents).values([
-        ...records.map((record) => ({
-          id: crypto.randomUUID(),
-          subdomainId: domain.domain.id,
-          domainLabel: domain.domain.label,
-          parentDomain: domain.parentDomain.hostname,
-          recordId: record.id,
-          actorType: 'owner' as const,
-          action: record.isPrimary ? 'primary_record_deleted' : 'child_record_deleted',
-          details: {
-            type: record.recordType,
-            name: record.recordName,
-            ttl: record.ttl,
-            proxied: record.proxied,
-            priority: record.priority,
-            isPrimary: record.isPrimary,
-            source: 'subdomain_release',
-          },
-          createdAt: now,
-        })),
-        {
-          id: crypto.randomUUID(),
-          subdomainId: domain.domain.id,
-          domainLabel: domain.domain.label,
-          parentDomain: domain.parentDomain.hostname,
-          actorType: 'owner',
-          action: 'subdomain_released',
-          details: { hostname, deletedRecordCount: records.length },
-          createdAt: now,
-        },
-      ]);
-      if (domain.domain.requestId) {
-        const released = await tx.update(subdomainRequests)
-          .set({ status: 'released', releasedAt: now })
-          .where(and(eq(subdomainRequests.id, domain.domain.requestId), eq(subdomainRequests.status, 'active')))
-          .returning({ id: subdomainRequests.id });
-        if (released.length === 0) throw new Error('Request status changed before the subdomain was released.');
-      }
-      const deleted = await tx.delete(subdomains)
-        .where(and(eq(subdomains.id, domain.domain.id), eq(subdomains.ownerId, session.owner.id), eq(subdomains.status, 'active')))
-        .returning({ id: subdomains.id });
-      if (deleted.length === 0) throw new Error('Subdomain status changed before deletion.');
-      const [{ value: remainingDomains }] = await tx.select({ value: count() }).from(subdomains).where(eq(subdomains.ownerId, session.owner.id));
-      if (remainingDomains === 0) await tx.delete(owners).where(eq(owners.id, session.owner.id));
-      return remainingDomains === 0;
-    });
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Không thể lưu trạng thái xóa subdomain.' }, { status: 409 });
-  }
-
-  return NextResponse.json({ ok: true, hostname, ownerDeleted });
 }

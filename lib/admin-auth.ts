@@ -2,11 +2,12 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { NextRequest, NextResponse } from 'next/server';
 
-const ADMIN_SESSION_COOKIE = 'takeshi_admin_session';
+const ADMIN_SESSION_COOKIE = process.env.NODE_ENV === 'production' ? '__Host-takeshi_admin_session' : 'takeshi_admin_session';
 const ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
 function adminSecret() {
-  return process.env.REGISTRY_ADMIN_KEY ?? '';
+  const value = process.env.REGISTRY_ADMIN_KEY ?? '';
+  return value === '[SENSITIVE]' ? '' : value;
 }
 
 function signature(value: string) {
