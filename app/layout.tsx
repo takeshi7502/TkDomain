@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import { Geist_Mono, Space_Grotesk } from 'next/font/google';
 import { ToastProvider } from '@/app/components/ToastProvider';
+import { WebAnalytics } from '@/app/components/WebAnalytics';
 import './globals.css';
 
 const display = Space_Grotesk({ variable: '--font-display', subsets: ['latin'] });
@@ -40,5 +41,5 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="vi"><body className={`${display.variable} ${mono.variable}`}><ToastProvider>{children}</ToastProvider></body></html>;
+  return <html lang="vi"><body className={`${display.variable} ${mono.variable}`}><ToastProvider>{children}</ToastProvider><WebAnalytics /></body></html>;
 }
