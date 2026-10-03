@@ -5,6 +5,8 @@
 - Remove runtime DDL/backfills. Check schema version once per process instead.
 - Admin loads 50 rows in the selected tab, filters pending requests server-side,
   fetches DNS details on expansion and polls a summary every 30 seconds while visible.
+- Pin Vercel Node functions to Singapore (`sin1`), close to the existing Neon
+  Singapore database, instead of the project's Washington (`iad1`) default.
 - Limit authenticated DNS writes to 10/minute per owner, 30/minute per network,
   60/minute globally; default quota 50 records per primary subdomain, including its main record.
   Daily write budgets are 200 per owner and 1,000 globally to bound audit growth.
