@@ -1,9 +1,10 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 
 import { useNoticeToast } from '@/app/components/ToastProvider';
+import styles from './admin.module.css';
 
 type RequestStatus = 'pending' | 'active' | 'rejected' | 'cancelled' | 'released' | 'expired';
 type DashboardTab = 'active-subdomains' | 'pending-requests' | 'request-log' | 'dns-log' | 'domains';
@@ -86,13 +87,30 @@ type Summary = { active: number; pending: number; requests: number; events: numb
 type DashboardPayload = { summary?: Summary; hasMore?: boolean; error?: string; requests?: RequestRecord[]; activeSubdomains?: ActiveSubdomain[]; dnsEvents?: DnsEvent[]; domains?: ManagedDomain[] };
 type DomainMutationPayload = { error?: string; domains?: ManagedDomain[] };
 
-const tabs: Array<{ id: DashboardTab; label: string }> = [
-  { id: 'active-subdomains', label: 'Subdomain đang dùng' },
-  { id: 'pending-requests', label: 'Chờ duyệt' },
-  { id: 'request-log', label: 'Nhật ký yêu cầu' },
-  { id: 'dns-log', label: 'Nhật ký DNS' },
-  { id: 'domains', label: 'Domains' },
+type IconName = 'subdomain' | 'pending' | 'requests' | 'dns' | 'domain' | 'settings' | 'refresh' | 'logout' | 'external' | 'shield';
+const tabs: Array<{ id: DashboardTab; label: string; title: string; description: string; icon: IconName; count: keyof Omit<Summary, 'revision'> }> = [
+  { id: 'active-subdomains', label: 'Subdomain đang dùng', title: 'Subdomain', description: 'Theo dõi chủ subdomain và mở từng mục để xem DNS records.', icon: 'subdomain', count: 'active' },
+  { id: 'pending-requests', label: 'Chờ duyệt', title: 'Yêu cầu chờ duyệt', description: 'Kiểm tra thông tin đăng ký trước khi duyệt hoặc từ chối.', icon: 'pending', count: 'pending' },
+  { id: 'request-log', label: 'Nhật ký yêu cầu', title: 'Nhật ký yêu cầu', description: 'Lịch sử đăng ký, trạng thái xử lý và thông báo email.', icon: 'requests', count: 'requests' },
+  { id: 'dns-log', label: 'Nhật ký DNS', title: 'Nhật ký DNS', description: 'Theo dõi các thay đổi record và hoạt động của chủ subdomain.', icon: 'dns', count: 'events' },
+  { id: 'domains', label: 'Domains', title: 'Domain gốc', description: 'Quản lý những domain mà registry nhận đăng ký subdomain.', icon: 'domain', count: 'domains' },
 ];
+
+function AdminIcon({ name, className }: { name: IconName; className?: string }) {
+  const paths: Record<IconName, string> = {
+    subdomain: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+    pending: 'M12 8v4l3 2 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
+    requests: 'M6 3h12v18H6z M9 7h6 M9 11h6 M9 15h4',
+    dns: 'M3 12h4l3-7 4 14 3-7h4',
+    domain: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M3 12h18 M12 3c-4 5-4 13 0 18 4-5 4-13 0-18',
+    settings: 'M12 3v3 M12 18v3 M3 12h3 M18 12h3 M5.6 5.6l2.1 2.1 M16.3 16.3l2.1 2.1 M5.6 18.4l2.1-2.1 M16.3 7.7l2.1-2.1 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
+    refresh: 'M20 7v5h-5 M4 17v-5h5 M6 6a8 8 0 0 1 14 6 M18 18A8 8 0 0 1 4 12',
+    logout: 'M10 4H4v16h6 M8 12h13 M17 8l4 4-4 4',
+    external: 'M14 3h7v7 M21 3l-9 9 M10 5H4v15h15v-6',
+    shield: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z M8 12l3 3 5-6',
+  };
+  return <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
+}
 
 function formatDate(timestamp: number) {
   return new Intl.DateTimeFormat('vi-VN', { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
@@ -616,8 +634,8 @@ export default function AdminPage() {
     if (activeTab === 'domains') {
       const domainBusy = addingDomain || archivingDomainId !== null;
       return <>
-        <p className="note">Nhập apex domain đang active trên Cloudflare. Server tự đọc Zone ID bằng token; token cần quyền Zone DNS Edit và Zone Zone Read trên domain đó.</p>
-        <form className="panel admin-key-form" onSubmit={addDomain}>
+        <div className={styles.domainSetup}>
+        <form className="admin-key-form" onSubmit={addDomain}>
           <label htmlFor="new-domain-hostname">Thêm domain gốc
             <input
               id="new-domain-hostname"
@@ -633,6 +651,8 @@ export default function AdminPage() {
           </label>
           <button className="button" type="submit" disabled={domainBusy || !newDomainHostname.trim()}>{addingDomain ? 'Đang thêm...' : 'Thêm domain'}</button>
         </form>
+        <p className="note">Domain phải đang active trên Cloudflare. Token cần quyền DNS Edit và Zone Read; server tự đọc Zone ID.</p>
+        </div>
         {domains.length === 0
           ? <div className="panel empty-state">Chưa có domain gốc nào trong registry.</div>
           : <div className="request-list">{domains.map((domain) => {
@@ -688,10 +708,10 @@ export default function AdminPage() {
             {expanded && <section className="admin-records-inspector" id={`admin-records-${domain.id}`} aria-label={`DNS records của ${domain.label}.${domain.parentDomain}`}>
               <div className="admin-records-heading">
                 <div><p className="eyebrow"><span className="pixel-dot" /> DNS RECORDS</p><p>Toàn bộ record đang thuộc <strong>{domain.label}.{domain.parentDomain}</strong>.</p></div>
-                <span className="status">{records.length} records</span>
+                <span className="status">{recordDetails[domain.id] ? `${records.length}${recordMore[domain.id] ? '+' : ''} records` : 'Đang tải'}</span>
               </div>
               {loadingRecords === domain.id && <p className="note">Đang tải records...</p>}
-              {records.length === 0 && loadingRecords !== domain.id
+              {records.length === 0 && recordDetails[domain.id] && loadingRecords !== domain.id
                 ? <p className="admin-records-empty">Chưa có DNS record nào trong database.</p>
                 : <div className="admin-record-list">{records.map((record) => <article className={`admin-dns-record${record.isPrimary ? ' primary' : ''}`} key={record.id}>
                   <span className="admin-record-type">{record.recordType}</span>
@@ -739,20 +759,118 @@ export default function AdminPage() {
       })}</div>;
   }
 
+  function navigateToTab(tab: DashboardTab) {
+    setPage(0);
+    setActiveTab(tab);
+  }
+
+  function navigateWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let next: number;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    navigateToTab(tabs[next].id);
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
+
+  async function runSynchronization() {
+    if (maintenanceBusy) return;
+    setMaintenanceBusy(true);
+    try {
+      const r = await fetch('/api/maintenance', { method: 'POST', signal: AbortSignal.timeout(120_000) });
+      if (!r.ok) throw new Error();
+      setNotice({ tone: 'success', text: 'Đã chạy kiểm tra đồng bộ và retry thông báo.' });
+      await loadDashboard({ clearNotice: false });
+    } catch {
+      setNotice({ tone: 'error', text: 'Không thể chạy kiểm tra lúc này.' });
+    } finally { setMaintenanceBusy(false); }
+  }
+
+  const currentTab = tabs.find((tab) => tab.id === activeTab)!;
+  const rowCount = activeTab === 'active-subdomains' ? activeSubdomains.length
+    : activeTab === 'pending-requests' ? pendingRequests.length
+      : activeTab === 'request-log' ? requests.length
+        : activeTab === 'dns-log' ? dnsEvents.length : domains.length;
+  const totalCount = summary?.[currentTab.count];
+  const summaryCards: Array<{ tab: DashboardTab; label: string; detail: string; icon: IconName; value: number | undefined }> = [
+    { tab: 'active-subdomains', label: 'Subdomain đang dùng', detail: 'Trong registry', icon: 'subdomain', value: summary?.active },
+    { tab: 'pending-requests', label: 'Chờ duyệt', detail: 'Cần được kiểm tra', icon: 'pending', value: summary?.pending },
+    { tab: 'domains', label: 'Domain gốc', detail: 'Đã thêm vào registry', icon: 'domain', value: summary?.domains },
+    { tab: 'request-log', label: 'Tổng yêu cầu', detail: 'Toàn bộ lịch sử đăng ký', icon: 'requests', value: summary?.requests },
+  ];
+
   return (
-    <main className="admin-page">
-      <div className="admin-shell">
-        <Link href="/" className="back-link">← Về trang đăng ký</Link>
-        <div className="admin-heading"><div><p className="eyebrow"><span className="pixel-dot" /> OWNER AREA</p><h1>Requests</h1></div><div><p>{authenticated ? 'Phiên admin được giữ bằng cookie HTTP-only trên thiết bị này. Admin key không được lưu trong trình duyệt.' : 'Nhập admin key để tạo phiên an toàn trên thiết bị này. Key không được lưu trong trình duyệt.'}</p>{authenticated && <div className="admin-session-actions"><button type="button" className="text-button" onClick={() => void configureTelegramWebhook()} disabled={configuringTelegramWebhook}>{configuringTelegramWebhook ? 'Đang cài webhook...' : 'Cài webhook bot'}</button><button type="button" className="text-button" onClick={() => void testTelegram()} disabled={testingTelegram}>{testingTelegram ? 'Đang gửi test...' : 'Test bot Telegram'}</button><button type="button" className="text-button" onClick={() => void logout()} disabled={state === 'loading'}>Đăng xuất admin</button></div>}</div></div>
-        {!authenticated && sessionChecked && <form className="panel admin-key-form" onSubmit={startSession}>
-          <label htmlFor="admin-key">Registry admin key<input id="admin-key" className="field" type="password" value={key} onChange={(event) => { setKey(event.target.value); setDashboardLoaded(false); }} autoComplete="off" required /></label>
-          <button type="submit" className="button" disabled={state === 'loading'}>{state === 'loading' ? 'Đang mở...' : 'Mở dashboard'}</button>
-        </form>}
-        {authenticated && accessKey && <section className="panel owner-key-panel"><p className="eyebrow"><span className="pixel-dot" /> OWNER ACCESS KEY</p><h2>{accessKey.subdomain}</h2><code>{accessKey.value}</code><p className="note">Gửi key này qua kênh riêng. Tạo key mới sẽ hủy các phiên panel cũ.</p><button type="button" className="text-button" onClick={() => setAccessKey(null)}>Đã sao chép</button></section>}
-        {authenticated && dashboardLoaded && <nav className="admin-tabs" role="tablist" aria-label="Dashboard quản trị">{tabs.map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? 'button' : 'button secondary-action'} onClick={() => { setPage(0); setActiveTab(tab.id); }}>{tab.label}{tab.id === 'pending-requests' && (summary?.pending ?? 0) > 0 ? ` (${summary?.pending})` : ''}</button>)}</nav>}
-        {authenticated && dashboardLoaded && <div className="admin-session-actions"><button className="text-button" type="button" disabled={page === 0 || state !== 'idle'} onClick={() => setPage((p) => p - 1)}>← Trang trước</button><span className="note">Trang {page + 1}</span><button className="text-button" type="button" disabled={!hasMore || state !== 'idle'} onClick={() => setPage((p) => p + 1)}>Trang sau →</button><button className="text-button" type="button" disabled={maintenanceBusy} onClick={async () => { setMaintenanceBusy(true); try { const r = await fetch('/api/maintenance', { method: 'POST', signal: AbortSignal.timeout(120_000) }); if (!r.ok) throw new Error(); setNotice({ tone: 'success', text: 'Đã chạy kiểm tra đồng bộ và retry thông báo.' }); await loadDashboard({ clearNotice: false }); } catch { setNotice({ tone: 'error', text: 'Không thể chạy kiểm tra lúc này.' }); } finally { setMaintenanceBusy(false); } }}>{maintenanceBusy ? 'Đang đồng bộ...' : 'Kiểm tra đồng bộ'}</button></div>}
-        {(authenticated || !sessionChecked) && <section className="admin-tab-panel" role="tabpanel">{renderDashboard()}</section>}
-      </div>
-    </main>
+    <div className={styles.page}>
+      <header className={styles.topbar}>
+        <div className={styles.topbarInner}>
+          <Link href="/admin" className={styles.brand} aria-label="Takeshi Domains Admin">
+            <span className={styles.brandMark}>Tk</span><span>TAKESHI <b>DOMAINS</b></span><small>ADMIN</small>
+          </Link>
+          <div className={styles.topbarActions}>
+            <Link href="/" className={styles.siteLink}><AdminIcon name="external" /><span>Trang đăng ký</span></Link>
+            {authenticated && <><span className={styles.account}><AdminIcon name="shield" /> Quản trị viên</span><button className={styles.logout} type="button" onClick={() => void logout()} disabled={state === 'loading'} title="Đăng xuất admin" aria-label="Đăng xuất admin"><AdminIcon name="logout" /></button></>}
+          </div>
+        </div>
+      </header>
+
+      {!authenticated ? <main className={styles.login}>
+        <section className={styles.loginCard} aria-busy={!sessionChecked || state === 'loading'}>
+          <div className={styles.loginIcon}><AdminIcon name="shield" /></div>
+          <p className={styles.overline}>PRIVATE CONSOLE</p>
+          <h1>Quản trị registry</h1>
+          <p className={styles.loginCopy}>Đăng nhập để quản lý subdomain, duyệt yêu cầu và theo dõi hoạt động DNS.</p>
+          {sessionChecked ? <form onSubmit={startSession}>
+            <label htmlFor="admin-key">Admin key<input id="admin-key" className="field" type="password" value={key} onChange={(event) => { setKey(event.target.value); setDashboardLoaded(false); }} autoComplete="off" required /></label>
+            <button type="submit" className="button" disabled={state === 'loading'}>{state === 'loading' ? 'Đang mở...' : 'Đăng nhập Admin'}</button>
+          </form> : <p className={styles.restoring} role="status">Đang khôi phục phiên admin...</p>}
+          <p className={styles.loginPrivacy}><AdminIcon name="shield" /> Phiên được giữ bằng cookie HTTP-only. Key không được lưu trong trình duyệt.</p>
+        </section>
+      </main> : <div className={styles.workspace}>
+        <aside className={styles.sidebar}>
+          <p className={styles.navLabel}>QUẢN LÝ REGISTRY</p>
+          <nav className={styles.navigation} role="tablist" aria-label="Dashboard quản trị" aria-orientation="vertical">
+            {tabs.map((tab, index) => <button key={tab.id} id={`admin-nav-${tab.id}`} type="button" role="tab" tabIndex={activeTab === tab.id ? 0 : -1} aria-selected={activeTab === tab.id} aria-controls="admin-content" className={`${styles.navItem}${activeTab === tab.id ? ` ${styles.navItemActive}` : ''}`} onClick={() => navigateToTab(tab.id)} onKeyDown={(event) => navigateWithKeyboard(event, index)}>
+              <AdminIcon name={tab.icon} /><span>{tab.label}</span><small className={tab.id === 'pending-requests' && (summary?.pending ?? 0) > 0 ? styles.pendingCount : undefined}>{summary?.[tab.count] ?? '—'}</small>
+            </button>)}
+          </nav>
+          <details className={styles.tools}>
+            <summary><AdminIcon name="settings" /> Công cụ hệ thống <span aria-hidden="true">+</span></summary>
+            <div>
+              <button type="button" onClick={() => void runSynchronization()} disabled={maintenanceBusy}>{maintenanceBusy ? 'Đang đồng bộ...' : 'Kiểm tra đồng bộ'}</button>
+              <button type="button" onClick={() => void testTelegram()} disabled={testingTelegram}>{testingTelegram ? 'Đang gửi test...' : 'Test bot Telegram'}</button>
+              <button type="button" onClick={() => void configureTelegramWebhook()} disabled={configuringTelegramWebhook}>{configuringTelegramWebhook ? 'Đang cài webhook...' : 'Cài webhook bot'}</button>
+            </div>
+          </details>
+          <div className={styles.sidebarFoot}><AdminIcon name="shield" /><p>Phiên admin đã xác thực.<br /><span>Chỉ dành cho quản trị viên.</span></p></div>
+        </aside>
+
+        <main className={styles.main}>
+          <div className={styles.heading}>
+            <div><p className={styles.breadcrumb}>Admin <span>/</span> {currentTab.label}</p><h1>{currentTab.title}</h1><p className={styles.description}>{currentTab.description}</p></div>
+            <button className={styles.refresh} type="button" disabled={state !== 'idle' || Boolean(actingOn) || addingDomain || Boolean(archivingDomainId) || maintenanceBusy} onClick={() => void loadDashboard()}><AdminIcon name="refresh" className={state === 'loading' ? styles.spinning : undefined} /> Làm mới</button>
+          </div>
+
+          <section className={styles.stats} aria-label="Tổng quan registry">
+            {summaryCards.map((card) => <button className={`${styles.stat}${card.tab === 'pending-requests' && (card.value ?? 0) > 0 ? ` ${styles.statPending}` : ''}`} key={card.tab} type="button" onClick={() => navigateToTab(card.tab)}>
+              <span className={styles.statLabel}>{card.label}<AdminIcon name={card.icon} /></span><strong>{card.value ?? '—'}</strong><small>{card.detail}</small>
+            </button>)}
+          </section>
+
+          {accessKey && <section className={`panel owner-key-panel ${styles.keyPanel}`}><div><p className="eyebrow"><span className="pixel-dot" /> OWNER ACCESS KEY</p><h2>{accessKey.subdomain}</h2></div><button type="button" className={styles.refresh} onClick={() => setAccessKey(null)}>Ẩn key</button><code>{accessKey.value}</code><p className="note">Gửi key này qua kênh riêng. Tạo key mới sẽ hủy các phiên panel cũ.</p></section>}
+
+          <section className={styles.dataSurface} id="admin-content" role="tabpanel" aria-labelledby={`admin-nav-${activeTab}`} aria-busy={state === 'loading'}>
+            <div className={styles.listHeading}><div><AdminIcon name={currentTab.icon} /><h2>{currentTab.label}</h2>{totalCount !== undefined && <span>{totalCount}</span>}</div><small>Tự cập nhật mỗi 30 giây</small></div>
+            <div className={styles.dataBody}>{renderDashboard()}</div>
+            {dashboardLoaded && <div className={styles.pagination}>
+              <p>{state === 'loading' ? 'Đang tải dữ liệu...' : rowCount > 0 ? <>Hiển thị <b>{page * 50 + 1}–{page * 50 + rowCount}</b>{totalCount !== undefined ? ` / ${totalCount}` : ''} mục</> : '0 mục'}</p>
+              <div><button type="button" disabled={page === 0 || state !== 'idle'} onClick={() => setPage((p) => p - 1)} aria-label="Trang trước">←</button><span>Trang {page + 1}</span><button type="button" disabled={!hasMore || state !== 'idle'} onClick={() => setPage((p) => p + 1)} aria-label="Trang sau">→</button></div>
+            </div>}
+          </section>
+        </main>
+      </div>}
+    </div>
   );
 }
