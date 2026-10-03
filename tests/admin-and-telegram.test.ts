@@ -47,6 +47,9 @@ describe('admin bounded queries and Telegram replay safety', () => {
     const detail = await (await GET(new NextRequest('https://domain.takeshi.dev/api/admin/requests?subdomainId=domain'))).json();
     expect(detail.records[0].content).toBe('verification=value');
     expect(detail.records[0]).not.toHaveProperty('cloudflareRecordId');
+    const domains = await (await GET(new NextRequest('https://domain.takeshi.dev/api/admin/requests?tab=domains'))).json();
+    expect(domains.domains[0].activeCount).toBe(1);
+    expect(domains.domains[0].pendingCount).toBe(1);
   });
   it('atomically claims duplicate webhook IDs and completes only its lease', async () => {
     const first = await claimTelegramWebhookUpdate('101'); expect(first.status).toBe('claimed');

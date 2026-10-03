@@ -82,8 +82,10 @@ export async function GET(request: NextRequest) {
   } else {
     rows = await db.select({ id: managedDomains.id, hostname: managedDomains.hostname, status: managedDomains.status,
       createdAt: managedDomains.createdAt, updatedAt: managedDomains.updatedAt,
-      activeCount: sql<number>`(SELECT count(*)::integer FROM subdomains s WHERE s.parent_domain_id = ${managedDomains.id} AND s.status IN ('active','deleting'))`,
-      pendingCount: sql<number>`(SELECT count(*)::integer FROM subdomain_requests r WHERE r.parent_domain_id = ${managedDomains.id} AND r.status='pending')`,
+      // Keep the outer reference qualified: Drizzle's single-table selection
+      // otherwise strips the table qualifier, binding "id" to the inner table.
+      activeCount: sql<number>`(SELECT count(*)::integer FROM subdomains s WHERE s.parent_domain_id = managed_domains.id AND s.status IN ('active','deleting'))`,
+      pendingCount: sql<number>`(SELECT count(*)::integer FROM subdomain_requests r WHERE r.parent_domain_id = managed_domains.id AND r.status='pending')`,
     }).from(managedDomains).orderBy(asc(managedDomains.hostname)).limit(size + 1).offset(page * size);
     payload.domains = rows.slice(0, size);
   }
