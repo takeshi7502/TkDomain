@@ -311,7 +311,7 @@ export const dnsOperations = pgTable('dns_operations', {
 
 export const notificationJobs = pgTable('notification_jobs', {
   id: text('id').primaryKey(), requestId: text('request_id').notNull().references(() => subdomainRequests.id, { onDelete: 'cascade' }),
-  kind: text('kind', { enum: ['receipt', 'approval', 'admin_telegram'] }).notNull(),
+  kind: text('kind', { enum: ['receipt', 'approval', 'admin_telegram', 'deletion'] }).notNull(),
   status: text('status', { enum: ['pending', 'done', 'failed'] }).notNull().default('pending'),
   attempts: integer('attempts').notNull().default(0), nextAttemptAt: bigint('next_attempt_at', { mode: 'number' }).notNull(),
   leaseToken: text('lease_token'), leaseUntil: bigint('lease_until', { mode: 'number' }).notNull().default(0),

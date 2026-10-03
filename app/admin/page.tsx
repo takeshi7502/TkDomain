@@ -55,6 +55,7 @@ type ActiveSubdomain = {
   updatedAt: number;
   telegramUsername: string | null;
   recordCount: number;
+  notificationEmail: string | null;
   records?: AdminDnsRecord[];
 };
 
@@ -87,7 +88,7 @@ type Summary = { active: number; pending: number; requests: number; events: numb
 type DashboardPayload = { summary?: Summary; hasMore?: boolean; error?: string; requests?: RequestRecord[]; activeSubdomains?: ActiveSubdomain[]; dnsEvents?: DnsEvent[]; domains?: ManagedDomain[] };
 type DomainMutationPayload = { error?: string; domains?: ManagedDomain[] };
 
-type IconName = 'subdomain' | 'pending' | 'requests' | 'dns' | 'domain' | 'settings' | 'refresh' | 'logout' | 'external' | 'shield';
+type IconName = 'subdomain' | 'pending' | 'requests' | 'dns' | 'domain' | 'settings' | 'refresh' | 'logout' | 'external' | 'shield' | 'trash' | 'close';
 const tabs: Array<{ id: DashboardTab; label: string; title: string; description: string; icon: IconName; count: keyof Omit<Summary, 'revision'> }> = [
   { id: 'active-subdomains', label: 'Subdomain đang dùng', title: 'Subdomain', description: 'Theo dõi chủ subdomain và mở từng mục để xem DNS records.', icon: 'subdomain', count: 'active' },
   { id: 'pending-requests', label: 'Chờ duyệt', title: 'Yêu cầu chờ duyệt', description: 'Kiểm tra thông tin đăng ký trước khi duyệt hoặc từ chối.', icon: 'pending', count: 'pending' },
@@ -108,6 +109,8 @@ function AdminIcon({ name, className }: { name: IconName; className?: string }) 
     logout: 'M10 4H4v16h6 M8 12h13 M17 8l4 4-4 4',
     external: 'M14 3h7v7 M21 3l-9 9 M10 5H4v15h15v-6',
     shield: 'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6z M8 12l3 3 5-6',
+    trash: 'M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7',
+    close: 'M6 6l12 12 M6 18L18 6',
   };
   return <svg className={className} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }
@@ -130,7 +133,7 @@ function requestStatusLabel(status: RequestStatus) {
     active: 'Đang dùng',
     rejected: 'Đã từ chối',
     cancelled: 'Người dùng đã hủy',
-    released: 'Đã trả lại',
+    released: 'Đã xoá / trả lại',
     expired: 'Đã hết hạn',
   };
   return labels[status];
@@ -143,7 +146,7 @@ function requestUpdatedAt(request: RequestRecord) {
 function approvalEmailStatus(request: RequestRecord) {
   if (!request.notificationEmail) return null;
   if (request.approvalEmailSentAt) return `Đã gửi ${formatDate(request.approvalEmailSentAt)}`;
-  if (request.status !== 'active') return 'Sẽ gửi khi duyệt';
+  if (request.status !== 'active') return request.status === 'pending' ? 'Sẽ gửi khi duyệt' : 'Không gửi email duyệt';
   if (request.approvalEmailError === 'not_configured') return 'Chưa cấu hình Resend';
   if (request.approvalEmailError === 'recipient_rate_limit') return 'Đang giới hạn gửi';
   if (request.approvalEmailError) return 'Gửi lỗi';
@@ -248,6 +251,19 @@ export default function AdminPage() {
   const actingOnRef = useRef<string | null>(null);
   const stateRef = useRef<AdminState>('idle');
   const authenticatedRef = useRef(false);
+  const deletionDialog = useRef<HTMLDialogElement>(null);
+  const [deletingDomain, setDeletingDomain] = useState<ActiveSubdomain | null>(null);
+  const [deletionReason, setDeletionReason] = useState('');
+  const [deletionConfirmation, setDeletionConfirmation] = useState('');
+  const [sendDeletionEmail, setSendDeletionEmail] = useState(true);
+  const [deletionError, setDeletionError] = useState('');
+  const deletionOperationId = useRef('');
+
+  useEffect(() => {
+    const dialog = deletionDialog.current;
+    if (deletingDomain && authenticated && dialog && !dialog.open) dialog.showModal();
+    else if (!deletingDomain && dialog?.open) dialog.close();
+  }, [deletingDomain, authenticated]);
 
   const setAdminAuthenticated = useCallback((value: boolean) => {
     authenticatedRef.current = value;
@@ -381,6 +397,7 @@ export default function AdminPage() {
       setDnsEvents([]);
       setDomains([]);
       setAccessKey(null);
+      setDeletingDomain(null);
       setExpandedSubdomainId(null);
       setRejectingRequestId(null);
       setRejectionReason('');
@@ -547,6 +564,53 @@ export default function AdminPage() {
     void review(id, 'reject', reason);
   }
 
+  function openDeletion(domain: ActiveSubdomain) {
+    if (actingOnRef.current || stateRef.current !== 'idle' || domain.status === 'deleting') return;
+    setDeletionReason('');
+    setDeletionConfirmation('');
+    setSendDeletionEmail(Boolean(domain.notificationEmail));
+    setDeletionError('');
+    deletionOperationId.current = crypto.randomUUID();
+    setDeletingDomain(domain);
+  }
+
+  function closeDeletion() {
+    if (actingOnRef.current) return;
+    setDeletingDomain(null);
+    setDeletionError('');
+  }
+
+  async function submitDeletion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!deletingDomain || actingOnRef.current) return;
+    const hostname = `${deletingDomain.label}.${deletingDomain.parentDomain}`;
+    const reason = deletionReason.trim();
+    if (deletionConfirmation !== hostname || reason.length < 3 || reason.length > 500) return;
+    const id = deletingDomain.id;
+    actingOnRef.current = id;
+    setActingOn(id);
+    setDeletionError('');
+    try {
+      const response = await fetch('/api/admin/subdomains', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(90_000),
+        body: JSON.stringify({ subdomainId: id, operationId: deletionOperationId.current, confirmation: hostname, reason, notifyEmail: sendDeletionEmail }),
+      });
+      const payload = await response.json() as { error?: string; pending?: boolean; deletionEmail?: 'queued' | 'skipped' };
+      if (!response.ok) throw new Error(payload.error ?? 'Không thể xoá subdomain.');
+      setDeletingDomain(null);
+      setAccessKey(null);
+      setNotice(payload.pending
+        ? { tone: 'info', text: `Đã nhận yêu cầu xoá ${hostname}. DNS đang được dọn; dữ liệu sẽ được giải phóng khi hoàn tất.${sendDeletionEmail ? ' Email sẽ được gửi sau đó.' : ''}` }
+        : { tone: 'success', text: `Đã xoá ${hostname} cùng toàn bộ DNS records.${payload.deletionEmail === 'queued' ? ' Email đã được xếp hàng gửi.' : ' Không gửi email thông báo.'}` });
+      await loadDashboard({ clearNotice: false });
+    } catch (error) {
+      setDeletionError(error instanceof Error ? error.message : 'Không thể xoá subdomain.');
+    } finally {
+      actingOnRef.current = null;
+      setActingOn(null);
+    }
+  }
+
   function renderAdminAction(
     id: string,
     action: 'provision' | 'reject' | 'reset_access' | 'retry_email',
@@ -702,8 +766,11 @@ export default function AdminPage() {
               </div>
             </div>
             <div className="admin-row-side">
-              <StatusBadge status={domain.status} label={domain.status === 'active' ? 'Đang dùng' : domain.status} />
-              {domain.requestId && <div className="admin-row-actions">{renderAdminAction(domain.requestId, 'reset_access', `Tạo access key mới cho ${domain.label}.${domain.parentDomain}`, '↻')}</div>}
+              <StatusBadge status={domain.status === 'deleting' ? 'pending' : domain.status} label={domain.status === 'active' ? 'Đang dùng' : domain.status === 'deleting' ? 'Đang xoá' : domain.status} />
+              <div className="admin-row-actions">
+                {domain.requestId && domain.status !== 'deleting' && renderAdminAction(domain.requestId, 'reset_access', `Tạo access key mới cho ${domain.label}.${domain.parentDomain}`, '↻')}
+                <button type="button" className="admin-icon-action danger" disabled={Boolean(actingOn) || state !== 'idle' || domain.status === 'deleting'} title={`Xoá ${domain.label}.${domain.parentDomain}`} aria-label={`Xoá ${domain.label}.${domain.parentDomain}`} onClick={() => openDeletion(domain)}><AdminIcon name="trash" /></button>
+              </div>
             </div>
             {expanded && <section className="admin-records-inspector" id={`admin-records-${domain.id}`} aria-label={`DNS records của ${domain.label}.${domain.parentDomain}`}>
               <div className="admin-records-heading">
@@ -854,9 +921,9 @@ export default function AdminPage() {
           </div>
 
           <section className={styles.stats} aria-label="Tổng quan registry">
-            {summaryCards.map((card) => <button className={`${styles.stat}${card.tab === 'pending-requests' && (card.value ?? 0) > 0 ? ` ${styles.statPending}` : ''}`} key={card.tab} type="button" onClick={() => navigateToTab(card.tab)}>
+            {summaryCards.map((card) => <div className={`${styles.stat}${card.tab === 'pending-requests' && (card.value ?? 0) > 0 ? ` ${styles.statPending}` : ''}`} key={card.tab}>
               <span className={styles.statLabel}>{card.label}<AdminIcon name={card.icon} /></span><strong>{card.value ?? '—'}</strong><small>{card.detail}</small>
-            </button>)}
+            </div>)}
           </section>
 
           {accessKey && <section className={`panel owner-key-panel ${styles.keyPanel}`}><div><p className="eyebrow"><span className="pixel-dot" /> OWNER ACCESS KEY</p><h2>{accessKey.subdomain}</h2></div><button type="button" className={styles.refresh} onClick={() => setAccessKey(null)}>Ẩn key</button><code>{accessKey.value}</code><p className="note">Gửi key này qua kênh riêng. Tạo key mới sẽ hủy các phiên panel cũ.</p></section>}
@@ -871,6 +938,23 @@ export default function AdminPage() {
           </section>
         </main>
       </div>}
+      {authenticated && <dialog ref={deletionDialog} className={styles.deletionDialog} aria-labelledby="delete-subdomain-title" aria-describedby="delete-subdomain-warning" onCancel={(event) => { event.preventDefault(); closeDeletion(); }}>
+        {deletingDomain && <form onSubmit={submitDeletion}>
+          <div className={styles.dialogHeading}><div><p>QUẢN TRỊ SUBDOMAIN</p><h2 id="delete-subdomain-title">Xoá subdomain</h2></div><button type="button" onClick={closeDeletion} disabled={Boolean(actingOn)} aria-label="Đóng xác nhận xoá"><AdminIcon name="close" /></button></div>
+          <p className={styles.deleteHostname}>{deletingDomain.label}.{deletingDomain.parentDomain}</p>
+          <p id="delete-subdomain-warning" className={styles.deleteWarning}>Toàn bộ DNS records và quyền quản lý subdomain này sẽ bị xoá. Tên được trả lại để đăng ký mới. Không thể hoàn tác từ panel; nhật ký vẫn được giữ.</p>
+          <fieldset disabled={Boolean(actingOn)}>
+            <label htmlFor="delete-subdomain-reason">Lý do xoá <small>(bắt buộc)</small></label>
+            <textarea id="delete-subdomain-reason" className="field" rows={3} autoFocus required minLength={3} maxLength={500} value={deletionReason} onChange={(event) => { setDeletionReason(event.target.value); setDeletionError(''); deletionOperationId.current = crypto.randomUUID(); }} placeholder="Nhập lý do để lưu vào nhật ký và email thông báo." />
+            <p className={styles.dialogHint}>{deletionReason.trim().length}/500 ký tự · tối thiểu 3 ký tự</p>
+            <label className={styles.emailChoice}><input type="checkbox" checked={sendDeletionEmail} disabled={!deletingDomain.notificationEmail} onChange={(event) => { setSendDeletionEmail(event.target.checked); deletionOperationId.current = crypto.randomUUID(); }} /><span>Gửi email thông báo cho người dùng<small>{deletingDomain.notificationEmail ?? 'Subdomain này chưa có email nhận thông báo; sẽ xoá không gửi thư.'}</small></span></label>
+            <label htmlFor="delete-subdomain-confirm">Nhập lại <strong>{deletingDomain.label}.{deletingDomain.parentDomain}</strong> để xác nhận</label>
+            <input id="delete-subdomain-confirm" className="field" value={deletionConfirmation} onChange={(event) => { setDeletionConfirmation(event.target.value); setDeletionError(''); }} autoComplete="off" spellCheck={false} required />
+          </fieldset>
+          {deletionError && <p className={styles.dialogError} role="alert">{deletionError}</p>}
+          <div className={styles.dialogActions}><button type="button" className={styles.refresh} onClick={closeDeletion} disabled={Boolean(actingOn)}>Huỷ</button><button type="submit" className={`button reject ${styles.deleteSubmit}`} disabled={Boolean(actingOn) || deletionConfirmation !== `${deletingDomain.label}.${deletingDomain.parentDomain}` || deletionReason.trim().length < 3 || deletionReason.trim().length > 500}>{actingOn ? 'Đang xoá...' : 'Xác nhận xoá'}</button></div>
+        </form>}
+      </dialog>}
     </div>
   );
 }

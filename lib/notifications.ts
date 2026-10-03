@@ -4,6 +4,7 @@ import { managedDomains, notificationJobs, subdomainRequests } from '@/db/schema
 import { notifyApprovedRequest } from '@/lib/approval-email';
 import { notifyRequestReceived } from '@/lib/request-email';
 import { notifyAdminOfNewRequest } from '@/lib/telegram';
+import { notifyDeletedRequest } from '@/lib/deletion-email';
 
 export function notificationValues(requestId: string, kinds: Array<typeof notificationJobs.$inferSelect.kind>) {
   const now = Date.now();
@@ -29,6 +30,7 @@ export async function processNotifications(requestId?: string, limit = 3, deadli
     try {
       if (job.kind === 'receipt') result = await notifyRequestReceived(job.requestId);
       else if (job.kind === 'approval') result = await notifyApprovedRequest(job.requestId);
+      else if (job.kind === 'deletion') result = await notifyDeletedRequest(job.requestId, job.createdAt, job.attempts);
       else {
         const [row] = await db.select({ request: subdomainRequests, hostname: managedDomains.hostname }).from(subdomainRequests)
           .innerJoin(managedDomains, eq(subdomainRequests.parentDomainId, managedDomains.id)).where(eq(subdomainRequests.id, job.requestId));

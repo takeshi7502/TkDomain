@@ -69,8 +69,9 @@ export async function GET(request: NextRequest) {
     rows = await db.select({ id: subdomains.id, requestId: subdomains.requestId, label: subdomains.label,
       parentDomain: managedDomains.hostname, status: subdomains.status, createdAt: subdomains.createdAt,
       updatedAt: subdomains.updatedAt, telegramUsername: owners.telegramUsername,
+      notificationEmail: subdomainRequests.notificationEmail,
       recordCount: sql<number>`(SELECT count(*)::integer FROM dns_records r WHERE r.subdomain_id = ${subdomains.id} AND NOT r.is_primary)`,
-    }).from(subdomains).innerJoin(owners, eq(subdomains.ownerId, owners.id)).innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id))
+    }).from(subdomains).innerJoin(owners, eq(subdomains.ownerId, owners.id)).innerJoin(managedDomains, eq(subdomains.parentDomainId, managedDomains.id)).leftJoin(subdomainRequests, eq(subdomains.requestId, subdomainRequests.id))
       .where(inArray(subdomains.status, ['active', 'deleting'])).orderBy(desc(subdomains.updatedAt), desc(subdomains.id)).limit(size + 1).offset(page * size);
     payload.activeSubdomains = rows.slice(0, size);
   } else if (tab === 'dns-log') {

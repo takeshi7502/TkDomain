@@ -1,6 +1,7 @@
 type ApprovalMessage = { hostname: string; language: string };
 type RequestReceivedMessage = ApprovalMessage & { requestId: string };
 type ApprovedMessage = ApprovalMessage & { accessKey: string | null };
+type DeletedMessage = ApprovalMessage & { reason: string };
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
@@ -57,6 +58,19 @@ export function buildApprovalEmail({ hostname, language, accessKey }: ApprovedMe
 
 export type EmailTransportResult = { accepted: true } | { accepted: false; error: string };
 
+export function buildDeletionEmail({ hostname, language, reason }: DeletedMessage) {
+  const en = language === 'en';
+  const title = en ? 'Your subdomain has been deleted' : 'Subdomain của bạn đã bị xoá';
+  const description = en ? `An administrator deleted ${hostname} and all of its DNS records.` : `Admin đã xoá ${hostname} cùng toàn bộ DNS record của subdomain này.`;
+  const note = en ? 'This subdomain is no longer available in your DNS Panel. Contact the administrator if you need assistance.' : 'Bạn không còn quản lý subdomain này trong DNS Panel. Nếu cần hỗ trợ, vui lòng liên hệ admin.';
+  const reasonLabel = en ? 'Reason' : 'Lý do';
+  return {
+    subject: en ? `${hostname} — subdomain deleted` : `${hostname} — subdomain đã bị xoá`,
+    text: [title, description, `${reasonLabel}: ${reason}`, note, 'https://t.me/jinndesu'].join('\n\n'),
+    html: `<html lang="${en ? 'en' : 'vi'}"><body style="margin:0;background:#10140e;color:#e7eddb;font-family:Arial,sans-serif"><div style="max-width:540px;margin:24px auto;padding:28px;border:1px solid #52613b;background:#192014"><p style="color:#b7d967;font-size:12px;letter-spacing:2px">TAKESHI DOMAINS</p><h1 style="font-size:24px">${title}</h1><p style="line-height:1.6">${escapeHtml(description)}</p><p style="padding:14px;border:1px solid #895a4b;background:#2d211a;line-height:1.6;white-space:pre-wrap"><strong>${reasonLabel}:</strong> ${escapeHtml(reason)}</p><p style="line-height:1.6">${note}</p><p><a href="https://t.me/jinndesu" style="color:#b7d967">${en ? 'Contact Admin' : 'Liên hệ Admin'}</a></p></div></body></html>`,
+  };
+}
+
 async function sendResendEmail(input: {
   email: string; apiKey: string; from: string; idempotencyKey: string;
   message: ReturnType<typeof buildApprovalEmail>;
@@ -103,4 +117,11 @@ export async function sendApprovalEmail(input: {
     idempotencyKey: `approval-v1/${input.requestId}`,
     message: buildApprovalEmail(input),
   });
+}
+
+export function sendDeletionEmail(input: {
+  requestId: string; email: string; hostname: string; language: string; reason: string; apiKey: string; from: string;
+}) {
+  return sendResendEmail({ email: input.email, apiKey: input.apiKey, from: input.from,
+    idempotencyKey: `deletion-v1/${input.requestId}`, message: buildDeletionEmail(input) });
 }
